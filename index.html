@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Send files with a 6-digit code</title>
+<style>
+:root{--bg:#e9eef0;--surface:#f8fafb;--ink:#1b2b34;--mute:#5d6f79;--line:#c9d4d9;--accent:#f2a900;--ok:#1e8e5a;--err:#c0392b;color-scheme:light}
+@media (prefers-color-scheme:dark){:root{--bg:#10181d;--surface:#18232a;--ink:#e6eef1;--mute:#93a5ae;--line:#2c3c45;--accent:#f2b630;--ok:#4cc38a;--err:#ff7b6b;color-scheme:dark}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:600px;margin:0 auto;padding:32px 18px calc(60px + env(safe-area-inset-bottom,0px));padding-top:calc(32px + env(safe-area-inset-top,0px))}
+body{-webkit-text-size-adjust:100%}
+button,input[type=text]{-webkit-appearance:none;appearance:none}
+h1{font-size:clamp(1.9rem,7vw,2.7rem);line-height:1.1;margin:0 0 8px;letter-spacing:-.02em}
+.lead{color:var(--mute);margin:0 0 22px}
+.panel{background:var(--surface);border:1.5px solid var(--line);border-radius:14px;padding:20px;margin-bottom:16px}
+.status{display:inline-block;font-weight:600;padding:6px 14px;border:1.5px solid var(--line);border-radius:99px;background:var(--surface);margin-bottom:18px}
+.status.on{border-color:var(--ok);color:var(--ok)}
+button{font:inherit;font-weight:600;cursor:pointer;border-radius:10px;padding:11px 18px;border:1.5px solid var(--line);background:transparent;color:var(--ink)}
+button.primary{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+button.go{background:var(--accent);color:#1b2b34;border-color:var(--accent)}
+button:disabled{opacity:.5}
+button:focus-visible,input:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media(max-width:560px){.two{grid-template-columns:1fr}}
+h2{font-size:1.1rem;margin:0 0 10px}
+.code{font:800 clamp(2.4rem,12vw,3.4rem)/1 ui-monospace,Menlo,Consolas,monospace;letter-spacing:.14em;margin:14px 0}
+input[type=text]{width:100%;font:800 1.8rem/1.2 ui-monospace,Menlo,Consolas,monospace;letter-spacing:.3em;text-align:center;padding:10px;color:var(--ink);background:var(--bg);border:1.5px solid var(--line);border-radius:10px;margin-bottom:10px}
+.msg{min-height:1.4em;margin-top:10px;color:var(--mute)}
+.msg.err{color:var(--err)}
+.hidden{display:none!important}
+.drop{text-align:center;border:2px dashed var(--line);border-radius:14px;padding:28px 16px;font-weight:600}
+.drop.over{border-color:var(--accent)}
+.row{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-top:14px}
+label.btn{display:inline-block;cursor:pointer;border-radius:10px;padding:11px 18px;border:1.5px solid var(--line);background:var(--bg);font-weight:600}
+label.btn:hover{border-color:var(--ink)}
+label.btn:focus-within{outline:3px solid var(--accent);outline-offset:2px}
+input[type=file]{position:absolute;opacity:0;width:1px;height:1px}
+ul{list-style:none;margin:0;padding:0}
+li{padding:10px 0;border-top:1px solid var(--line)}
+li:first-child{border-top:0}
+.name{font-weight:600;word-break:break-all}
+.meta{display:flex;justify-content:space-between;color:var(--mute);font-size:.88rem}
+.bar{height:6px;background:var(--bg);border-radius:4px;overflow:hidden;margin-top:6px}
+.bar i{display:block;height:100%;width:0;background:var(--accent)}
+a.dl{color:var(--ink);font-weight:600}
+.empty{color:var(--mute)}
+</style>
+</head>
+<body>
+<main>
+<h1>Send files with a 6-digit code</h1>
+<p class="lead">Send files or whole folders directly to your friend, even on a different network.</p>
+<div id="status" class="status">Not connected</div>
+
+<section id="connect" class="two">
+  <div class="panel">
+    <h2>I send first</h2>
+    <p class="msg" style="margin-top:0">Get a code and give it to your friend.</p>
+    <button id="mk" class="primary">Get my code</button>
+    <div id="codeShow" class="code hidden" aria-live="polite"></div>
+  </div>
+  <div class="panel">
+    <h2>I have a code</h2>
+    <input type="text" id="codeIn" inputmode="numeric" maxlength="6" placeholder="000000" autocomplete="off" aria-label="6-digit code">
+    <button id="join" class="go">Connect</button>
+  </div>
+</section>
+<div id="msg" class="msg" role="status"></div>
+
+<section id="transfer" class="hidden">
+  <p class="msg" id="keep">Keep this page open and the screen on until transfers finish.</p>
+  <div class="panel"><div class="drop" id="drop"><span id="dropTxt">Drop files or folders here</span><div class="row"><label class="btn">Choose files<input type="file" id="files" multiple></label><label class="btn">Choose folder<input type="file" id="dir" webkitdirectory></label></div></div></div>
+  <div class="panel"><h2>Sent</h2><ul id="outList"><li class="empty">Nothing sent yet.</li></ul></div>
+  <div class="panel"><h2>Received</h2><ul id="inList"><li class="empty">Nothing received yet.</li></ul></div>
+</section>
+</main>
+<script>
+(function(){
+var $=function(i){return document.getElementById(i)};
+var CHUNK=16384,conn=null,incoming=null,sock=null;
+function msg(t,e){$('msg').textContent=t||'';$('msg').className='msg'+(e?' err':'')}
+function status(t,on){$('status').textContent=t;$('status').className='status'+(on?' on':'')}
+function fmt(n){return n<1024?n+' B':n<1048576?(n/1024).toFixed(1)+' KB':n<1073741824?(n/1048576).toFixed(1)+' MB':(n/1073741824).toFixed(2)+' GB'}
+function ready(){
+  if(location.protocol==='file:'){msg('Open this page from your server address (not as a file from your phone).',true);return false}
+  if(!('WebSocket' in window)){msg('Your browser does not support WebSocket.',true);return false}
+  return true;
+}
+/* connect to the relay server on the same address that served this page */
+function openSock(role,code,btn){
+  var s=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws?role='+role+(code?'&code='+code:''));
+  s.binaryType='arraybuffer';sock=s;
+  var paired=false,failed=false;
+  function bad(t){if(failed)return;failed=true;btn.disabled=false;msg(t,true);try{s.close()}catch(e){}}
+  s.onmessage=function(e){
+    var d=e.data;
+    if(paired){onData(d);return}
+    if(typeof d!=='string')return;
+    if(d.indexOf('@code:')===0){
+      var c=d.slice(6);$('codeShow').textContent=c;$('codeShow').classList.remove('hidden');btn.classList.add('hidden');
+      status('Waiting for your friend');msg('Your friend enters this code on their page. Keep this page open.');
+    }else if(d==='@paired'){
+      paired=true;conn={open:true,dataChannel:s};
+      keepAwake();status('Connected to your friend',true);msg('');$('connect').classList.add('hidden');$('transfer').classList.remove('hidden');
+    }else if(d==='@nocode')bad('No one is using that code. Check the digits and ask your friend to keep their page open.');
+    else if(d==='@limit')bad('Too many wrong tries. Wait a minute and try again.');
+    else if(d==='@full')bad('Server is busy. Try again in a moment.');
+  };
+  s.onerror=function(){};
+  s.onclose=function(){
+    if(paired){if(conn)conn.open=false;status('Disconnected');$('drop').classList.add('hidden');onLost()}
+    else bad('Could not reach the server. Check the address and try again.');
+  };
+}
+$('mk').onclick=function(){
+  if(!ready())return;
+  this.disabled=true;msg('Getting a code\u2026');openSock('host',null,this);
+};
+$('join').onclick=function(){
+  var code=$('codeIn').value.replace(/\D/g,'');
+  if(code.length!==6){msg('Enter all 6 digits.',true);return}
+  if(!ready())return;
+  this.disabled=true;msg('Connecting\u2026');openSock('join',code,this);
+};
+/* transfer */
+var q=Promise.resolve(),rxq=Promise.resolve(),rx=null,out=null;
+var MEM=209715200,WIN=8388608,ACK=2097152,CH=65536,READ=1048576,HIGH=4194304;
+var CAN_DISK=typeof window.showSaveFilePicker==='function';
+function enqueue(fn){q=q.then(fn).catch(function(){})}
+function uid(){return Math.random().toString(36).slice(2,10)}
+function send(o){conn.dataChannel.send(JSON.stringify(o))}
+function wait(o){return new Promise(function(r){o.wake=r})}
+function wake(o){var w=o.wake;o.wake=null;if(w)w()}
+function onLost(){if(out){out.dead=true;wake(out)}}
+function mkItem(id,name,size){
+  var l=$(id),e=l.querySelector('.empty');if(e)l.removeChild(e);
+  var li=document.createElement('li');
+  li.innerHTML='<div class="name"></div><div class="meta"><span class="st"></span><span class="sz"></span></div><div class="bar"><i></i></div>';
+  li.querySelector('.name').textContent=name;li.querySelector('.sz').textContent=fmt(size);
+  l.insertBefore(li,l.firstChild);return li;
+}
+function prog(li,d,t,label,force){
+  var n=performance.now();if(!force&&li._t&&n-li._t<100)return;li._t=n;
+  var p=t?d/t*100:100;li.querySelector('.bar i').style.width=p+'%';li.querySelector('.st').textContent=label+' '+Math.floor(p)+'%';
+}
+function clean(p){return String(p).split('/').filter(function(s){return s&&s!=='..'&&s!=='.'}).join('/')||'file'}
+function link(st,url,name,text){st.textContent='';var a=document.createElement('a');a.className='dl';a.href=url;a.download=name;a.textContent=text;st.appendChild(a)}
+
+/* zip */
+var T=(function(){var t=new Uint32Array(256);for(var n=0;n<256;n++){var c=n;for(var k=0;k<8;k++)c=c&1?0xEDB88320^(c>>>1):c>>>1;t[n]=c>>>0}return t})();
+function crc(c,u){c=~c;for(var i=0;i<u.length;i++)c=T[(c^u[i])&255]^(c>>>8);return ~c>>>0}
+function zipWriter(sink){
+  var enc=new TextEncoder(),off=0,ents=[],cur=null,d=new Date();
+  var tm=(d.getHours()<<11)|(d.getMinutes()<<5)|(d.getSeconds()>>1),dt=((d.getFullYear()-1980)<<9)|((d.getMonth()+1)<<5)|d.getDate();
+  function put(b){off+=b.byteLength;return sink.write(b)}
+  function u64(v,p,n){v.setBigUint64(p,BigInt(n),true)}
+  return{
+    startFile:function(path){
+      var nm=enc.encode(path),h=new DataView(new ArrayBuffer(50+nm.length));
+      h.setUint32(0,0x04034b50,true);h.setUint16(4,45,true);h.setUint16(6,0x0808,true);h.setUint16(10,tm,true);h.setUint16(12,dt,true);
+      h.setUint32(18,0xFFFFFFFF,true);h.setUint32(22,0xFFFFFFFF,true);h.setUint16(26,nm.length,true);h.setUint16(28,20,true);
+      new Uint8Array(h.buffer).set(nm,30);h.setUint16(30+nm.length,1,true);h.setUint16(32+nm.length,16,true);
+      cur={nm:nm,offset:off,crc:0,size:0};return put(h.buffer);
+    },
+    chunk:function(b){cur.crc=crc(cur.crc,new Uint8Array(b));cur.size+=b.byteLength;return put(b)},
+    endFile:function(){
+      var h=new DataView(new ArrayBuffer(24));h.setUint32(0,0x08074b50,true);h.setUint32(4,cur.crc,true);u64(h,8,cur.size);u64(h,16,cur.size);
+      ents.push(cur);cur=null;return put(h.buffer);
+    },
+    finish:async function(){
+      var cdOff=off;
+      for(var i=0;i<ents.length;i++){
+        var e=ents[i],c=new DataView(new ArrayBuffer(74+e.nm.length)),p=46+e.nm.length;
+        c.setUint32(0,0x02014b50,true);c.setUint16(4,45,true);c.setUint16(6,45,true);c.setUint16(8,0x0808,true);c.setUint16(12,tm,true);c.setUint16(14,dt,true);
+        c.setUint32(16,e.crc,true);c.setUint32(20,0xFFFFFFFF,true);c.setUint32(24,0xFFFFFFFF,true);c.setUint16(28,e.nm.length,true);c.setUint16(30,28,true);c.setUint32(42,0xFFFFFFFF,true);
+        new Uint8Array(c.buffer).set(e.nm,46);c.setUint16(p,1,true);c.setUint16(p+2,24,true);u64(c,p+4,e.size);u64(c,p+12,e.size);u64(c,p+20,e.offset);
+        await put(c.buffer);
+      }
+      var cs=off-cdOff,eo=off,z=new DataView(new ArrayBuffer(98));
+      z.setUint32(0,0x06064b50,true);u64(z,4,44);z.setUint16(12,45,true);z.setUint16(14,45,true);u64(z,24,ents.length);u64(z,32,ents.length);u64(z,40,cs);u64(z,48,cdOff);
+      z.setUint32(56,0x07064b50,true);u64(z,64,eo);z.setUint32(72,1,true);
+      z.setUint32(76,0x06054b50,true);z.setUint16(84,0xFFFF,true);z.setUint16(86,0xFFFF,true);z.setUint32(88,0xFFFFFFFF,true);z.setUint32(92,0xFFFFFFFF,true);
+      return put(z.buffer);
+    }
+  };
+}
+/* end zip */
+
+/* sinks: memory, or straight to disk (no size limit) */
+function memSink(arr){return{write:function(b){arr.push(b);return Promise.resolve()}}}
+function diskSink(w){
+  var bufs=[],len=0;
+  function flush(){if(!len)return Promise.resolve();var b=new Blob(bufs);bufs=[];len=0;return w.write(b)}
+  return{write:function(b){bufs.push(b);len+=b.byteLength;return len>=1048576?flush():Promise.resolve()},close:async function(){await flush();await w.close()}};
+}
+
+/* storage on the device itself (works in Safari on iPhone) */
+var CAN_OPFS=!!(navigator.storage&&navigator.storage.getDirectory&&window.Worker);
+var IOS=/iPhone|iPad|iPod/.test(navigator.userAgent)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
+if(IOS){$('dir').parentNode.classList.add('hidden');$('dropTxt').textContent='Choose files to send'}
+var wl=null;
+function keepAwake(){try{if(navigator.wakeLock)navigator.wakeLock.request('screen').then(function(l){wl=l}).catch(function(){})}catch(e){}}
+document.addEventListener('visibilitychange',function(){if(document.visibilityState==='visible'&&conn&&conn.open)keepAwake()});
+if(CAN_OPFS)(async function(){try{var root=await navigator.storage.getDirectory();var names=[];for await(var en of root.entries())names.push(en[0]);names.forEach(function(n){if(n.indexOf('rx-')===0)root.removeEntry(n).catch(function(){})})}catch(e){}})();
+function workerMain(){
+  var h=null,pos=0;
+  onmessage=async function(e){
+    var m=e.data;
+    try{
+      if(m.t==='open'){var root=await navigator.storage.getDirectory();var fh=await root.getFileHandle(m.name,{create:true});h=await fh.createSyncAccessHandle();h.truncate(0);pos=0}
+      else if(m.t==='w'){var u=new Uint8Array(m.b);h.write(u,{at:pos});pos+=u.byteLength}
+      else if(m.t==='close'){h.flush();h.close();h=null}
+      postMessage({t:'ok',rid:m.rid});
+    }catch(err){postMessage({t:'err',rid:m.rid,msg:String(err&&err.message||err)})}
+  };
+}
+async function opfsSink(){
+  var name='rx-'+Date.now()+'-'+Math.random().toString(36).slice(2,6),pend={},id=0,bufs=[],len=0;
+  var w=new Worker(URL.createObjectURL(new Blob(['('+workerMain.toString()+')()'],{type:'text/javascript'})));
+  w.onmessage=function(e){var m=e.data,p=pend[m.rid];delete pend[m.rid];if(p){if(m.t==='err')p.rej(new Error(m.msg));else p.res()}};
+  w.onerror=function(){Object.keys(pend).forEach(function(k){pend[k].rej(new Error('worker'))});pend={}};
+  function call(m,tr){return new Promise(function(res,rej){var i=++id;pend[i]={res:res,rej:rej};m.rid=i;w.postMessage(m,tr||[])})}
+  function flush(){
+    if(!len)return Promise.resolve();
+    var u=new Uint8Array(len),o=0;bufs.forEach(function(b){u.set(new Uint8Array(b),o);o+=b.byteLength});bufs=[];len=0;
+    return call({t:'w',b:u.buffer},[u.buffer]);
+  }
+  await call({t:'open',name:name});
+  return{
+    write:function(b){bufs.push(b);len+=b.byteLength;return len>=1048576?flush():Promise.resolve()},
+    close:async function(){await flush();await call({t:'close'});w.terminate();var root=await navigator.storage.getDirectory();return (await root.getFileHandle(name)).getFile()}
+  };
+}
+
+/* receive */
+function onData(d){
+  if(typeof d==='string'){
+    var m=JSON.parse(d);
+    if(m.t==='go'||m.t==='ack'||m.t==='no'){
+      if(out&&out.id===m.id){if(m.t==='go')out.go=true;if(m.t==='ack')out.acked=m.n;if(m.t==='no')out.no=true;wake(out)}
+      return;
+    }
+    rxq=rxq.then(function(){return ctl(m)}).catch(fail);
+    return;
+  }
+  if(rx&&rx.sink){rx.got+=d.byteLength;prog(rx.li,rx.got,rx.size,'Receiving')}
+  rxq=rxq.then(function(){return chunk(d)}).catch(fail);
+}
+function fail(){if(rx&&rx.li)rx.li.querySelector('.st').textContent='Error while saving'}
+async function ctl(m){
+  if(m.t==='folder'){
+    rx={kind:'folder',id:m.id,name:clean(m.name),count:m.count,size:m.size,got:0,done:0,processed:0,lastAck:0,li:mkItem('inList',m.name+' (folder, '+m.count+' files)',m.size)};
+    await offer(rx,rx.name+'.zip');
+  }else if(m.t==='meta'&&m.inFolder&&rx&&rx.kind==='folder'){
+    await rx.zip.startFile(clean(m.name));
+  }else if(m.t==='meta'){
+    rx={kind:'file',id:m.id,name:clean(m.name),type:m.type,size:m.size,got:0,processed:0,lastAck:0,li:mkItem('inList',m.name,m.size)};
+    await offer(rx,rx.name.split('/').pop());
+  }else if(m.t==='end'&&rx){
+    var r=rx;
+    if(r.kind==='folder'){
+      await r.zip.endFile();r.done++;
+      if(r.done<r.count)return;
+      await r.zip.finish();
+    }
+    rx=null;await finalize(r);
+  }
+}
+async function offer(r,fname){
+  var st=r.li.querySelector('.st');
+  if(r.size>MEM&&CAN_DISK){
+    var b=document.createElement('button'),x=document.createElement('button');
+    b.textContent='Save to disk ('+fmt(r.size)+')';x.textContent='Decline';st.textContent='';st.append(b,x);
+    b.onclick=async function(){
+      try{
+        var h=await window.showSaveFilePicker({suggestedName:fname});
+        var w=await h.createWritable();
+        r.sink=diskSink(w);r.disk=true;if(r.kind==='folder')r.zip=zipWriter(r.sink);
+        st.textContent='Receiving 0%';send({t:'go',id:r.id});
+      }catch(e){}
+    };
+    x.onclick=function(){send({t:'no',id:r.id});st.textContent='Declined';if(rx===r)rx=null};
+    return;
+  }
+  if(r.size>MEM&&CAN_OPFS){
+    try{r.sink=await opfsSink();r.opfs=true;if(r.kind==='folder')r.zip=zipWriter(r.sink);send({t:'go',id:r.id});return}catch(e){r.sink=null}
+  }
+  r.mem=[];r.sink=memSink(r.mem);if(r.kind==='folder')r.zip=zipWriter(r.sink);
+  if(r.size>MEM){var nd=document.createElement('div');nd.className='meta';nd.textContent='Large transfer kept in memory. Use Chrome or Edge on a computer, or Safari 15.2 or newer, for unlimited size.';r.li.appendChild(nd)}
+  send({t:'go',id:r.id});
+}
+async function chunk(d){
+  var r=rx;if(!r||!r.sink)return;
+  if(r.kind==='folder')await r.zip.chunk(d);else await r.sink.write(d);
+  r.processed+=d.byteLength;
+  if(r.processed-r.lastAck>=ACK){r.lastAck=r.processed;send({t:'ack',id:r.id,n:r.processed})}
+}
+async function finalize(r){
+  prog(r.li,1,1,'',1);var st=r.li.querySelector('.st');st.textContent='';
+  var fn=r.kind==='folder'?r.name+'.zip':r.name.split('/').pop(),txt=r.kind==='folder'?'Download as .zip':'Save file';
+  if(r.disk){await r.sink.close();st.textContent='Saved to disk';return}
+  if(r.opfs){link(st,URL.createObjectURL(await r.sink.close()),fn,txt);return}
+  link(st,URL.createObjectURL(new Blob(r.mem,{type:r.kind==='folder'?'application/zip':(r.type||'application/octet-stream')})),fn,txt);
+}
+
+/* send */
+function waitLow(){return new Promise(function(r){
+  var d=conn.dataChannel;
+  (function p(){if(d.bufferedAmount<=1048576||d.readyState!==1)r();else setTimeout(p,15)})();
+})}
+async function goWait(o){while(!o.go){if(o.dead||o.no)throw 0;await wait(o)}}
+async function pushFile(f,o,onBytes){
+  var d=conn.dataChannel,off=0;
+  var rd=function(p){return f.slice(p,Math.min(p+READ,f.size)).arrayBuffer()};
+  var next=f.size?rd(0):null;
+  while(off<f.size){
+    var big=await next;off+=big.byteLength;
+    if(off<f.size)next=rd(off);
+    for(var p=0;p<big.byteLength;p+=CH){
+      var n=Math.min(CH,big.byteLength-p);
+      while(o.sent-o.acked>WIN){if(o.dead)throw 0;await wait(o)}
+      if(o.dead||d.readyState!==1)throw 0;
+      if(d.bufferedAmount>HIGH)await waitLow();
+      d.send(new Uint8Array(big,p,n));o.sent+=n;
+    }
+    onBytes(big.byteLength);
+  }
+}
+async function sendFile(f){
+  var li=mkItem('outList',f.name,f.size),o=out={id:uid(),acked:0,sent:0,go:false},st=li.querySelector('.st'),s=0;
+  try{
+    send({t:'meta',id:o.id,name:f.name,size:f.size,type:f.type});
+    st.textContent='Waiting for your friend to accept\u2026';
+    await goWait(o);
+    await pushFile(f,o,function(n){s+=n;prog(li,s,f.size,'Sending')});
+    send({t:'end'});prog(li,1,1,'',1);st.textContent='Sent';
+  }catch(e){st.textContent=o.no?'Declined by your friend':'Failed: connection closed'}
+  if(out===o)out=null;
+}
+async function sendFolder(name,list){
+  if(!list.length)return;
+  var total=list.reduce(function(a,x){return a+x.file.size},0),s=0;
+  var li=mkItem('outList',name+' (folder, '+list.length+' files)',total),o=out={id:uid(),acked:0,sent:0,go:false},st=li.querySelector('.st');
+  try{
+    send({t:'folder',id:o.id,name:name,count:list.length,size:total});
+    st.textContent='Waiting for your friend to accept\u2026';
+    await goWait(o);
+    for(var i=0;i<list.length;i++){
+      var x=list[i];
+      send({t:'meta',name:x.path,size:x.file.size,type:x.file.type,inFolder:true});
+      await pushFile(x.file,o,function(n){s+=n;prog(li,s,total,'Sending')});
+      send({t:'end'});
+    }
+    prog(li,1,1,'',1);st.textContent='Sent';
+  }catch(e){st.textContent=o.no?'Declined by your friend':'Failed: connection closed'}
+  if(out===o)out=null;
+}
+function ok(){return conn&&conn.open}
+$('files').onchange=function(){var l=[].slice.call(this.files);this.value='';enqueue(async function(){for(var i=0;i<l.length&&ok();i++)await sendFile(l[i])})};
+$('dir').onchange=function(){
+  var l=[].slice.call(this.files);this.value='';if(!l.length)return;
+  var name=l[0].webkitRelativePath.split('/')[0]||'folder';
+  enqueue(function(){return ok()?sendFolder(name,l.map(function(f){return{file:f,path:f.webkitRelativePath||f.name}})):0});
+};
+async function walk(en,path,out2){
+  if(en.isFile){out2.push({file:await new Promise(function(r,j){en.file(r,j)}),path:path+en.name});return}
+  var rd=en.createReader(),all=[];
+  for(;;){var b=await new Promise(function(r,j){rd.readEntries(r,j)});if(!b.length)break;all=all.concat(b)}
+  for(var i=0;i<all.length;i++)await walk(all[i],path+en.name+'/',out2);
+}
+var dz=$('drop');
+['dragenter','dragover'].forEach(function(n){dz.addEventListener(n,function(e){e.preventDefault();dz.classList.add('over')})});
+['dragleave','drop'].forEach(function(n){dz.addEventListener(n,function(e){e.preventDefault();dz.classList.remove('over')})});
+dz.addEventListener('drop',function(e){
+  var its=e.dataTransfer.items,ents=[];
+  if(its&&its.length&&its[0].webkitGetAsEntry){for(var i=0;i<its.length;i++){var en=its[i].webkitGetAsEntry();if(en)ents.push(en)}}
+  var fl=[].slice.call(e.dataTransfer.files);
+  enqueue(async function(){
+    if(!ents.length){for(var i=0;i<fl.length&&ok();i++)await sendFile(fl[i]);return}
+    for(var j=0;j<ents.length&&ok();j++){
+      var o2=[];await walk(ents[j],'',o2);
+      if(ents[j].isDirectory)await sendFolder(ents[j].name,o2);else if(o2[0])await sendFile(o2[0].file);
+    }
+  });
+});
+})();
+</script>
+</body>
+</html>

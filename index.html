@@ -1,93 +1,121 @@
 <!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>File drop</title>
+<title>Send files with a 6-digit code</title>
 <style>
 :root{--bg:#e9eef0;--surface:#f8fafb;--ink:#1b2b34;--mute:#5d6f79;--line:#c9d4d9;--accent:#f2a900;--ok:#1e8e5a;--err:#c0392b;color-scheme:light}
 @media (prefers-color-scheme:dark){:root{--bg:#10181d;--surface:#18232a;--ink:#e6eef1;--mute:#93a5ae;--line:#2c3c45;--accent:#f2b630;--ok:#4cc38a;--err:#ff7b6b;color-scheme:dark}}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-text-size-adjust:100%}
 main{max-width:600px;margin:0 auto;padding:calc(30px + env(safe-area-inset-top,0px)) 18px calc(50px + env(safe-area-inset-bottom,0px))}
-h1{font-size:clamp(1.9rem,7vw,2.6rem);line-height:1.1;margin:0 0 8px;letter-spacing:-.02em}.lead{color:var(--mute);margin:0 0 20px}
-.panel{background:var(--surface);border:1.5px solid var(--line);border-radius:14px;padding:18px;margin-bottom:16px}
-.tabs{display:flex;gap:8px;margin-bottom:16px}.tabs button{flex:1}
-button,label.btn{font:inherit;font-weight:600;cursor:pointer;border-radius:10px;padding:11px 16px;border:1.5px solid var(--line);background:var(--bg);color:var(--ink);-webkit-appearance:none;display:inline-block;text-align:center}
-button.on,button.primary{background:var(--ink);color:var(--bg);border-color:var(--ink)}button.go{background:var(--accent);color:#1b2b34;border-color:var(--accent)}
+h1{font-size:clamp(1.9rem,7vw,2.7rem);line-height:1.1;margin:0 0 8px;letter-spacing:-.02em}.lead{color:var(--mute);margin:0 0 20px}
+.status{display:inline-block;font-weight:600;padding:6px 14px;border:1.5px solid var(--line);border-radius:99px;background:var(--surface);margin-bottom:18px}
+.status.on{border-color:var(--ok);color:var(--ok)}
+.panel{background:var(--surface);border:1.5px solid var(--line);border-radius:14px;padding:20px;margin-bottom:16px}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:16px}@media(max-width:560px){.two{grid-template-columns:1fr}}
+.two .panel{margin:0}
+button,label.btn{font:inherit;font-weight:600;cursor:pointer;border-radius:10px;padding:11px 18px;border:1.5px solid var(--line);background:var(--bg);color:var(--ink);-webkit-appearance:none;display:inline-block;text-align:center}
+button.primary{background:var(--ink);color:var(--bg);border-color:var(--ink)}button.go{background:var(--accent);color:#1b2b34;border-color:var(--accent)}
+button:disabled{opacity:.5}
 button:focus-visible,input:focus-visible,label.btn:focus-within{outline:3px solid var(--accent);outline-offset:2px}
-input[type=text],input[type=password]{width:100%;font:inherit;padding:11px;color:var(--ink);background:var(--bg);border:1.5px solid var(--line);border-radius:10px;margin-bottom:10px}
-#codeIn{font:800 1.8rem/1.2 ui-monospace,Menlo,Consolas,monospace;letter-spacing:.3em;text-align:center}
-.drop{text-align:center;border:2px dashed var(--line);border-radius:14px;padding:26px 14px;font-weight:600;margin-top:4px}.drop.over{border-color:var(--accent)}
+input[type=text]{width:100%;font:800 1.8rem/1.2 ui-monospace,Menlo,Consolas,monospace;letter-spacing:.3em;text-align:center;padding:10px;color:var(--ink);background:var(--bg);border:1.5px solid var(--line);border-radius:10px;margin-bottom:10px}
+h2{font-size:1.1rem;margin:0 0 10px}
+.code{font:800 clamp(2.4rem,12vw,3.4rem)/1 ui-monospace,Menlo,Consolas,monospace;letter-spacing:.14em;margin:12px 0}
+.drop{text-align:center;border:2px dashed var(--line);border-radius:14px;padding:26px 14px;font-weight:600;margin-top:12px}.drop.over{border-color:var(--accent)}
 .row{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-top:12px}input[type=file]{position:absolute;opacity:0;width:1px;height:1px}
 .msg{min-height:1.4em;color:var(--mute);margin:8px 0}.msg.err{color:var(--err)}.hidden{display:none!important}
-.code{font:800 clamp(2.4rem,12vw,3.6rem)/1 ui-monospace,Menlo,Consolas,monospace;letter-spacing:.14em;margin:10px 0}
 ul{list-style:none;margin:0;padding:0}li{padding:10px 0;border-top:1px solid var(--line)}li:first-child{border-top:0}
 .name{font-weight:600;word-break:break-all}.meta{display:flex;justify-content:space-between;gap:10px;color:var(--mute);font-size:.88rem}
 .bar{height:6px;background:var(--bg);border-radius:4px;overflow:hidden;margin-top:6px}.bar i{display:block;height:100%;width:0;background:var(--accent)}
-a{color:var(--ink);font-weight:600}h2{font-size:1.1rem;margin:0 0 8px}
+a{color:var(--ink);font-weight:600}
 </style></head><body><main>
-<h1>File drop</h1><p class="lead">Publish files once. Your friend downloads them as normal with a 6-digit code once publishing finishes.</p>
+<h1>Send files with a 6-digit code</h1>
+<p class="lead">Publish files once. Your friend downloads them as normal with the code, from anywhere.</p>
+<div id="status" class="status">Not connected</div>
 <div id="srvNote" class="msg err hidden" role="alert"></div>
-<div class="tabs"><button id="tS" class="on">Send</button><button id="tR">Receive</button></div>
 
-<section id="send" class="panel">
-  <input type="password" id="pw" placeholder="Upload password" autocomplete="current-password" aria-label="Upload password">
-  <div class="drop" id="drop"><span id="dropTxt">Drop files or folders here</span>
-    <div class="row"><label class="btn">Choose files<input type="file" id="files" multiple></label><label class="btn" id="dirBtn">Choose folder<input type="file" id="dir" webkitdirectory></label></div></div>
-  <div id="sMsg" class="msg" role="status"></div>
-  <div id="done" class="hidden"><h2>Give your friend this code</h2><div class="code" id="codeOut"></div>
-    <div id="doneNote" class="msg"></div>
-    <div class="row" style="justify-content:flex-start"><button id="cp">Copy link</button></div></div>
-  <ul id="up"></ul>
+<section id="connect" class="two">
+  <div class="panel">
+    <h2>I send first</h2>
+    <p class="msg" style="margin-top:0">Get a code and give it to your friend.</p>
+    <button id="mk" class="primary">Get my code</button>
+  </div>
+  <div class="panel">
+    <h2>I have a code</h2>
+    <input type="text" id="codeIn" inputmode="numeric" maxlength="6" placeholder="000000" autocomplete="off" aria-label="6-digit code">
+    <button id="join" class="go">Connect</button>
+  </div>
+</section>
+<div id="msg" class="msg" role="status"></div>
+
+<section id="send" class="hidden">
+  <div class="panel">
+    <h2>Give your friend this code</h2>
+    <div class="code" id="codeOut"></div>
+    <div class="row" style="justify-content:flex-start;margin-top:0"><button id="cp">Copy link</button></div>
+    <div id="drop" class="drop"><span id="dropTxt">Drop files or folders here</span>
+      <div class="row"><label class="btn">Choose files<input type="file" id="files" multiple></label><label class="btn" id="dirBtn">Choose folder<input type="file" id="dir" webkitdirectory></label></div></div>
+    <div id="sMsg" class="msg" role="status"></div>
+    <ul id="up"></ul>
+  </div>
 </section>
 
-<section id="recv" class="panel hidden">
-  <input type="text" id="codeIn" inputmode="numeric" maxlength="6" placeholder="000000" autocomplete="off" aria-label="6-digit code">
-  <button class="go" id="look">Show files</button>
-  <div id="rMsg" class="msg" role="status"></div>
-  <div id="zipRow" class="hidden"><a id="zipA" href="#"><button class="primary">Download all as .zip</button></a></div>
-  <ul id="down"></ul>
+<section id="recv" class="hidden">
+  <div class="panel">
+    <div id="rMsg" class="msg" role="status" style="margin-top:0"></div>
+    <div id="zipRow" class="hidden"><a id="zipA" href="#"><button class="primary">Download all as .zip</button></a></div>
+    <ul id="down"></ul>
+  </div>
 </section>
 </main>
 <script>
 (function(){
 var $=function(i){return document.getElementById(i)};
 function fmt(n){return n<1024?n+' B':n<1048576?(n/1024).toFixed(1)+' KB':n<1073741824?(n/1048576).toFixed(1)+' MB':(n/1073741824).toFixed(2)+' GB'}
-function msg(id,t,e){$(id).textContent=t||'';$(id).className='msg'+(e?' err':'')}
-function tab(s){$('send').classList.toggle('hidden',!s);$('recv').classList.toggle('hidden',s);$('tS').className=s?'on':'';$('tR').className=s?'':'on'}
-$('tS').onclick=function(){tab(true)};$('tR').onclick=function(){tab(false)};
-try{$('pw').value=localStorage.getItem('pw')||''}catch(e){}
+function msg(t,e){$('msg').textContent=t||'';$('msg').className='msg'+(e?' err':'')}
+function sMsg(t,e){$('sMsg').textContent=t||'';$('sMsg').className='msg'+(e?' err':'')}
+function status(t,on){$('status').textContent=t;$('status').className='status'+(on?' on':'')}
 if(/iPhone|iPad|iPod/.test(navigator.userAgent)){$('dirBtn').classList.add('hidden');$('dropTxt').textContent='Choose files to send'}
 
-var busy=false;
+/* is the server reachable? */
+(function(){
+  function show(t){$('srvNote').textContent=t;$('srvNote').classList.remove('hidden')}
+  if(location.protocol==='file:'){show('This page was opened as a file. Open it from your server address instead, for example http://YOUR-SERVER-IP:8080');return}
+  fetch('/health',{cache:'no-store'}).then(function(r){if(!r.ok)throw 0}).catch(function(){show('Cannot reach the server at '+location.origin+'. Check that server.js is running and the address and port are correct.')});
+})();
+
+/* ---------- send ---------- */
+var code=null,token=null,busy=false,published=false;
+$('mk').onclick=async function(){
+  var b=this;b.disabled=true;msg('Getting a code\u2026');
+  try{
+    var r=await fetch('/api/new',{method:'POST'});
+    if(r.status===429){msg('Too many codes requested. Try again later.',true);b.disabled=false;return}
+    if(!r.ok)throw 0;
+    var j=await r.json();code=j.code;token=j.token;
+    $('connect').classList.add('hidden');msg('');$('send').classList.remove('hidden');$('codeOut').textContent=code;
+    status('Code ready. Choose your files.');sMsg('Your friend can enter the code now. Downloads open when publishing finishes.');
+    $('cp').onclick=function(){var c=this,l=location.origin+'/#'+code;(navigator.clipboard?navigator.clipboard.writeText(l):Promise.reject()).then(function(){c.textContent='Copied'},function(){c.textContent=l})};
+  }catch(e){msg('Could not reach the server.',true);b.disabled=false}
+};
 function mk(name,size){var li=document.createElement('li');li.innerHTML='<div class="name"></div><div class="meta"><span class="st">Waiting</span><span></span></div><div class="bar"><i></i></div>';
   li.querySelector('.name').textContent=name;li.querySelectorAll('.meta span')[1].textContent=fmt(size);$('up').insertBefore(li,$('up').firstChild);return li}
-function put(code,it,li){return new Promise(function(res,rej){
+function put(it,li){return new Promise(function(res,rej){
   var x=new XMLHttpRequest(),t=0;x.open('PUT','/api/up/'+code);
-  x.setRequestHeader('X-Password',$('pw').value);x.setRequestHeader('X-Path',encodeURIComponent(it.path));
-  x.upload.onprogress=function(e){var n=performance.now();if(n-t<100&&e.loaded<e.total)return;t=n;var p=e.total?e.loaded/e.total*100:100;li.querySelector('.bar i').style.width=p+'%';li.querySelector('.st').textContent='Uploading '+Math.floor(p)+'%'};
-  x.onload=function(){if(x.status===200){li.querySelector('.bar i').style.width='100%';li.querySelector('.st').textContent='Uploaded';res()}else rej(new Error('HTTP '+x.status))};
+  x.setRequestHeader('X-Token',token);x.setRequestHeader('X-Path',encodeURIComponent(it.path));
+  x.upload.onprogress=function(e){var n=performance.now();if(n-t<100&&e.loaded<e.total)return;t=n;var p=e.total?e.loaded/e.total*100:100;li.querySelector('.bar i').style.width=p+'%';li.querySelector('.st').textContent='Publishing '+Math.floor(p)+'%'};
+  x.onload=function(){if(x.status===200){li.querySelector('.bar i').style.width='100%';li.querySelector('.st').textContent='Published';res()}else rej(new Error('HTTP '+x.status))};
   x.onerror=function(){rej(new Error('network'))};x.send(it.file)})}
 async function upload(items){
-  if(busy||!items.length)return;
-  var pwv=$('pw').value;
-  if(!pwv){msg('sMsg','Enter the upload password first.',true);return}
-  busy=true;msg('sMsg','Starting\u2026');$('done').classList.add('hidden');
-  var code;
-  try{
-    var r=await fetch('/api/new',{method:'POST',headers:{'X-Password':pwv}});
-    if(r.status===401){msg('sMsg','Wrong password.',true);busy=false;return}
-    code=(await r.json()).code;try{localStorage.setItem('pw',pwv)}catch(e){}
-  }catch(e){msg('sMsg','Could not reach the server.',true);busy=false;return}
-  $('codeOut').textContent=code;$('done').classList.remove('hidden');
-  $('doneNote').textContent='Publishing\u2026 your friend can enter this code now. Downloads open when publishing finishes.';
-  $('cp').onclick=function(){var b=this,l=location.origin+'/#'+code;(navigator.clipboard?navigator.clipboard.writeText(l):Promise.reject()).then(function(){b.textContent='Copied'},function(){b.textContent=l})};
+  if(busy||published||!code||!items.length)return;
+  busy=true;status('Publishing\u2026');
   for(var i=0;i<items.length;i++){
-    var li=mk(items[i].path,items[i].file.size);msg('sMsg','Publishing file '+(i+1)+' of '+items.length+'\u2026');
-    try{await put(code,items[i],li)}catch(e){li.querySelector('.st').textContent='Failed: '+e.message;msg('sMsg','Publishing failed. Check your connection and try again.',true);busy=false;return}
+    var li=mk(items[i].path,items[i].file.size);sMsg('Publishing file '+(i+1)+' of '+items.length+'\u2026');
+    try{await put(items[i],li)}catch(e){li.querySelector('.st').textContent='Failed: '+e.message;sMsg('Publishing failed. Check your connection and choose the files again.',true);status('Code ready. Choose your files.');busy=false;return}
   }
   try{
-    var d=await fetch('/api/done/'+code,{method:'POST',headers:{'X-Password':pwv}});
+    var d=await fetch('/api/done/'+code,{method:'POST',headers:{'X-Token':token}});
     if(!d.ok)throw 0;
-    msg('sMsg','Published. Your friend can download now.');$('doneNote').textContent='Published. Your friend can download now.';
-  }catch(e){msg('sMsg','Files uploaded but could not finish publishing. Try again.',true)}
+    published=true;$('drop').classList.add('hidden');status('Published',true);sMsg('Published. Your friend can download now.');
+  }catch(e){sMsg('Files uploaded but could not finish publishing. Choose the files again.',true)}
   busy=false;
 }
 $('files').onchange=function(){var l=[].slice.call(this.files).map(function(f){return{file:f,path:f.name}});this.value='';upload(l)};
@@ -107,34 +135,31 @@ dz.addEventListener('drop',async function(e){
   upload(o);
 });
 
-/* check the server is reachable as soon as the page opens */
-(function(){
-  function show(t){$('srvNote').textContent=t;$('srvNote').classList.remove('hidden')}
-  if(location.protocol==='file:'){show('This page was opened as a file. Open it from your server address instead, for example http://YOUR-SERVER-IP:8080');return}
-  fetch('/health',{cache:'no-store'}).then(function(r){if(!r.ok)throw 0}).catch(function(){show('Cannot reach the server at '+location.origin+'. Check that server.js is running and the address and port are correct.')});
-})();
-/* receive */
-var enc=function(p){return p.split('/').map(encodeURIComponent).join('/')};
-var poll=null;
-async function look(){
+/* ---------- receive ---------- */
+var enc=function(p){return p.split('/').map(encodeURIComponent).join('/')},poll=null;
+async function look(c){
   clearTimeout(poll);
-  var c=$('codeIn').value.replace(/\D/g,'');if(c.length!==6){msg('rMsg','Enter all 6 digits.',true);return}
-  msg('rMsg','Looking\u2026');$('down').innerHTML='';$('zipRow').classList.add('hidden');
   try{
     var r=await fetch('/api/list/'+c);
-    if(r.status===429){msg('rMsg','Too many tries. Wait a minute.',true);return}
-    if(!r.ok){msg('rMsg','No files for that code. It may be wrong or expired.',true);return}
+    if(r.status===429){msg('Too many tries. Wait a minute.',true);$('join').disabled=false;return}
+    if(!r.ok){msg('No files for that code. Check the digits, it may also have expired.',true);$('join').disabled=false;return}
     var j=await r.json(),n=j.files.length;
-    if(!j.done){msg('rMsg','The sender is still publishing ('+n+' file'+(n===1?'':'s')+' so far). This page updates by itself.');poll=setTimeout(look,2500);return}
-    msg('rMsg',n+' file'+(n===1?'':'s')+' ready to download.');
+    $('connect').classList.add('hidden');$('recv').classList.remove('hidden');msg('');
+    if(!j.done){status('Waiting for the sender');$('rMsg').textContent='The sender is still publishing ('+n+' file'+(n===1?'':'s')+' so far). This page updates by itself.';poll=setTimeout(function(){look(c)},2500);return}
+    status('Ready to download',true);$('rMsg').textContent=n+' file'+(n===1?'':'s')+' ready to download.';
+    $('down').innerHTML='';
     j.files.forEach(function(f){var li=document.createElement('li'),a=document.createElement('a');
       li.innerHTML='<div class="name"></div><div class="meta"><span></span><span></span></div>';
       li.querySelector('.name').textContent=f.path;li.querySelectorAll('.meta span')[1].textContent=fmt(f.size);
       a.href='/d/'+c+'/'+enc(f.path);a.textContent='Download';li.querySelectorAll('.meta span')[0].appendChild(a);$('down').appendChild(li)});
     if(n>1){$('zipA').href='/zip/'+c;$('zipRow').classList.remove('hidden')}
-  }catch(e){msg('rMsg','Could not reach the server.',true)}
+  }catch(e){msg('Could not reach the server.',true);$('join').disabled=false}
 }
-$('look').onclick=look;$('codeIn').addEventListener('keydown',function(e){if(e.key==='Enter')look()});
-if(/^#\d{6}$/.test(location.hash)){tab(false);$('codeIn').value=location.hash.slice(1);look()}
+function join(){
+  var c=$('codeIn').value.replace(/\D/g,'');if(c.length!==6){msg('Enter all 6 digits.',true);return}
+  $('join').disabled=true;msg('Connecting\u2026');look(c);
+}
+$('join').onclick=join;$('codeIn').addEventListener('keydown',function(e){if(e.key==='Enter')join()});
+if(/^#\d{6}$/.test(location.hash)){$('codeIn').value=location.hash.slice(1);join()}
 })();
 </script></body></html>

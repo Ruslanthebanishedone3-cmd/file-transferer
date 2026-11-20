@@ -1,5 +1,5 @@
 // Tiny file drop server. No dependencies. Needs Node 16 or newer.
-// Run:  PASSWORD=yourpassword node server.js
+// Run:  node server.js
 'use strict';
 const http = require('http'), fs = require('fs'), path = require('path'), crypto = require('crypto');
 const { once } = require('events');
@@ -8,8 +8,6 @@ const PORT = +process.env.PORT || 8080;
 const DATA = path.resolve(process.env.DATA_DIR || './shares');
 const KEEP_DAYS = +process.env.KEEP_DAYS || 7;          // shares are deleted after this many days
 const TRUST_PROXY = !!process.env.TRUST_PROXY;           // set if you run behind Caddy/nginx
-let PASSWORD = process.env.PASSWORD;
-if (!PASSWORD) { PASSWORD = crypto.randomBytes(4).toString('hex'); console.log('No PASSWORD set. Temporary upload password: ' + PASSWORD); }
 fs.mkdirSync(DATA, { recursive: true });
 
 const T = new Uint32Array(256);
@@ -20,7 +18,10 @@ const json = (res, code, obj) => { res.writeHead(code, { 'Content-Type': 'applic
 const safeRel = p => String(p).replace(/[\u0000-\u001f\\]/g, '').split('/').filter(s => s && s !== '.' && s !== '..').join('/').slice(0, 500);
 const codeDir = c => /^\d{6}$/.test(c) ? path.join(DATA, c) : null;
 const readMeta = d => { try { return JSON.parse(fs.readFileSync(path.join(d, 'meta.json'), 'utf8')); } catch (e) { return null; } };
-const authOK = req => { const a = Buffer.from(String(req.headers['x-password'] || '')), b = Buffer.from(PASSWORD); return a.length === b.length && crypto.timingSafeEqual(a, b); };
+// each share has its own secret token, so only the page that created a code can add files to it
+const tokOK = (req, meta) => { const a = Buffer.from(String(req.headers['x-token'] || '')), b = Buffer.from(String(meta.token || '')); return b.length > 0 && a.length === b.length && crypto.timingSafeEqual(a, b); };
+const made = new Map();   // limit how many codes one address can create per hour
+function makeLimited(ip) { const f = made.get(ip); if (!f || Date.now() - f.t > 3600e3) { made.set(ip, { n: 1, t: Date.now() }); return false; } return ++f.n > 30; }
 
 const fails = new Map();   // simple guess protection for 6-digit codes
 function ipOf(req) { return (TRUST_PROXY && String(req.headers['x-forwarded-for'] || '').split(',')[0].trim()) || req.socket.remoteAddress; }
@@ -87,20 +88,20 @@ http.createServer((req, res) => {
   if (req.method === 'GET' && p === '/') return fs.createReadStream(path.join(__dirname, 'index.html')).on('error', () => json(res, 500, { error: 'index.html missing' })).pipe(res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }) && res);
 
   if (req.method === 'POST' && p === '/api/new') {
-    if (!authOK(req)) return json(res, 401, { error: 'wrong password' });
+    if (makeLimited(ip)) return json(res, 429, { error: 'too many codes' });
     for (let i = 0; i < 50; i++) {
-      const c = String(crypto.randomInt(0, 1000000)).padStart(6, '0'), d = path.join(DATA, c);
+      const c = String(crypto.randomInt(0, 1000000)).padStart(6, '0'), d = path.join(DATA, c), token = crypto.randomBytes(16).toString('hex');
       if (fs.existsSync(d)) continue;
       fs.mkdirSync(path.join(d, 'data'), { recursive: true });
-      fs.writeFileSync(path.join(d, 'meta.json'), JSON.stringify({ created: Date.now(), files: {}, done: false }));
-      return json(res, 200, { code: c });
+      fs.writeFileSync(path.join(d, 'meta.json'), JSON.stringify({ created: Date.now(), files: {}, done: false, token }));
+      return json(res, 200, { code: c, token });
     }
     return json(res, 500, { error: 'no free code' });
   }
 
   if (req.method === 'PUT' && (m = /^\/api\/up\/(\d{6})$/.exec(p))) {
-    if (!authOK(req)) return json(res, 401, { error: 'wrong password' });
     const dir = codeDir(m[1]), meta = dir && readMeta(dir);
+    if (meta && !tokOK(req, meta)) return json(res, 401, { error: 'not your code' });
     let rel; try { rel = safeRel(decodeURIComponent(req.headers['x-path'] || '')); } catch (e) { rel = ''; }
     if (!meta || !rel) return json(res, 400, { error: 'bad request' });
     if (meta.done) return json(res, 409, { error: 'already published' });
@@ -123,9 +124,9 @@ http.createServer((req, res) => {
   }
 
   if (req.method === 'POST' && (m = /^\/api\/done\/(\d{6})$/.exec(p))) {      // sender finished: publish
-    if (!authOK(req)) return json(res, 401, { error: 'wrong password' });
     const dir = codeDir(m[1]), meta = dir && readMeta(dir);
     if (!meta) return json(res, 404, { error: 'no such code' });
+    if (!tokOK(req, meta)) return json(res, 401, { error: 'not your code' });
     meta.done = true; fs.writeFileSync(path.join(dir, 'meta.json'), JSON.stringify(meta));
     return json(res, 200, { ok: true });
   }

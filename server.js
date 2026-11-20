@@ -46,15 +46,15 @@ function sendFile(req, res, full, name) {
   });
 }
 
-async function sendZip(res, dir, code, meta) {
-  let total = 98; for (const k of Object.keys(meta.files)) total += 124 + 2 * Buffer.byteLength(k) + meta.files[k].size;   // exact size, so the browser shows real progress
-  res.writeHead(200, { 'Content-Type': 'application/zip', 'Content-Length': total, 'Content-Disposition': 'attachment; filename="' + code + '.zip"' });
+async function sendZip(res, dir, label, keys, meta) {
+  let total = 98; for (const k of keys) total += 124 + 2 * Buffer.byteLength(k) + meta.files[k].size;   // exact size, so the browser shows real progress
+  res.writeHead(200, { 'Content-Type': 'application/zip', 'Content-Length': total, 'Content-Disposition': "attachment; filename*=UTF-8''" + encodeURIComponent(label) + '.zip' });
   let off = 0, closed = false; res.on('close', () => closed = true);
   const put = async b => { if (closed) throw new Error('closed'); off += b.length; if (!res.write(b)) await once(res, 'drain'); };
   const d = new Date(), tm = (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1), dt = ((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate();
   const ents = [];
   try {
-    for (const rel of Object.keys(meta.files).sort()) {
+    for (const rel of keys) {
       const f = meta.files[rel], nm = Buffer.from(rel), h = Buffer.alloc(50 + nm.length);
       h.writeUInt32LE(0x04034b50, 0); h.writeUInt16LE(45, 4); h.writeUInt16LE(0x0800, 6); h.writeUInt16LE(tm, 10); h.writeUInt16LE(dt, 12);
       h.writeUInt32LE(f.crc, 14); h.writeUInt32LE(0xFFFFFFFF, 18); h.writeUInt32LE(0xFFFFFFFF, 22); h.writeUInt16LE(nm.length, 26); h.writeUInt16LE(20, 28);
@@ -137,7 +137,12 @@ http.createServer((req, res) => {
     const dir = codeDir(m[2]), meta = dir && readMeta(dir);
     if (!meta) { fail(ip); return json(res, 404, { error: 'no such code' }); }
     if (m[1] === 'api/list') return json(res, 200, { files: Object.keys(meta.files).map(k => ({ path: k, size: meta.files[k].size, from: meta.files[k].from || '', t: meta.files[k].t || 0 })).sort((a, b) => b.t - a.t) });
-    if (m[1] === 'zip') return sendZip(res, dir, m[2], meta);
+    if (m[1] === 'zip') {                                  // /zip/CODE = everything, /zip/CODE/folder = just that folder
+      let pre = ''; try { pre = safeRel(decodeURIComponent(m[3] || '')); } catch (e) {}
+      const keys = Object.keys(meta.files).filter(k => !pre || k.startsWith(pre + '/')).sort();
+      if (!keys.length) return json(res, 404, { error: 'nothing to zip' });
+      return sendZip(res, dir, pre || m[2], keys, meta);
+    }
     let rel; try { rel = safeRel(decodeURIComponent(m[3] || '')); } catch (e) { rel = ''; }
     if (!meta.files[rel]) return json(res, 404, { error: 'no such file' });
     return sendFile(req, res, path.join(dir, 'data', rel), rel.split('/').pop());

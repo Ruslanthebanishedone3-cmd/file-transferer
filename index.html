@@ -134,31 +134,58 @@ document.addEventListener('visibilitychange',function(){if(document.visibilitySt
 function render(files){
   var ul=$('list');ul.innerHTML='';
   if(!files.length){ul.innerHTML='<li class="empty">No files yet.</li>';$('zipRow').classList.add('hidden');return}
+  var items=[],byFolder={};
   files.forEach(function(f){
+    var i=f.path.indexOf('/');
+    if(i<=0){items.push({name:f.path,size:f.size,from:f.from,t:f.t,folder:false});return}
+    var n=f.path.slice(0,i),g=byFolder[n];
+    if(!g){g=byFolder[n]={name:n,size:0,count:0,from:f.from,t:0,folder:true};items.push(g)}
+    g.size+=f.size;g.count++;if(f.t>g.t){g.t=f.t;g.from=f.from}
+  });
+  items.sort(function(a,b){return b.t-a.t});
+  items.forEach(function(f){
     var li=document.createElement('li'),a=document.createElement('a'),bd=document.createElement('span'),mine=f.from===myId;
     li.innerHTML='<div class="name"></div><div class="meta"><span></span><span></span></div>';
-    li.querySelector('.name').textContent=f.path;
+    li.querySelector('.name').textContent=f.name;
     bd.className='badge'+(mine?' me':'');bd.textContent=mine?'You':'Friend';
-    a.href='/d/'+code+'/'+enc(f.path);a.textContent='Download';
-    var sp=li.querySelectorAll('.meta span');sp[0].appendChild(bd);sp[0].appendChild(a);sp[1].textContent=fmt(f.size);
+    a.href=(f.folder?'/zip/':'/d/')+code+'/'+enc(f.name);a.textContent=f.folder?'Download folder (.zip)':'Download';
+    var sp=li.querySelectorAll('.meta span');sp[0].appendChild(bd);sp[0].appendChild(a);
+    sp[1].textContent=(f.folder?f.count+' file'+(f.count===1?'':'s')+', ':'')+fmt(f.size);
     ul.appendChild(li);
   });
-  if(files.length>1){$('zipA').href='/zip/'+code;$('zipRow').classList.remove('hidden')}else $('zipRow').classList.add('hidden');
+  if(items.length>1){$('zipA').href='/zip/'+code;$('zipRow').classList.remove('hidden')}else $('zipRow').classList.add('hidden');
 }
 
 /* ---------- sending (you can keep adding more, any time) ---------- */
 function mk(name,size){var li=document.createElement('li');li.innerHTML='<div class="name"></div><div class="meta"><span class="st">Waiting</span><span></span></div><div class="bar"><i></i></div>';
   li.querySelector('.name').textContent=name;li.querySelectorAll('.meta span')[1].textContent=fmt(size);$('up').insertBefore(li,$('up').firstChild);return li}
-function put(it,li){return new Promise(function(res,rej){
+function setP(li,d,t){var p=t?d/t*100:100;li.querySelector('.bar i').style.width=p+'%';li.querySelector('.st').textContent='Sending '+Math.floor(p)+'%'}
+function put(it,onp){return new Promise(function(res,rej){
   var x=new XMLHttpRequest(),t=0;x.open('PUT','/api/up/'+code);
   x.setRequestHeader('X-From',myId);x.setRequestHeader('X-Path',encodeURIComponent(it.path));
-  x.upload.onprogress=function(e){var n=performance.now();if(n-t<100&&e.loaded<e.total)return;t=n;var p=e.total?e.loaded/e.total*100:100;li.querySelector('.bar i').style.width=p+'%';li.querySelector('.st').textContent='Sending '+Math.floor(p)+'%'};
-  x.onload=function(){if(x.status===200){li.querySelector('.bar i').style.width='100%';li.querySelector('.st').textContent='Sent. Your friend can download it now.';res()}else rej(new Error(x.status===404?'room expired':'HTTP '+x.status))};
+  x.upload.onprogress=function(e){var n=performance.now();if(n-t<100&&e.loaded<e.total)return;t=n;onp(e.loaded)};
+  x.onload=function(){if(x.status===200)res();else rej(new Error(x.status===404?'room expired':'HTTP '+x.status))};
   x.onerror=function(){rej(new Error('network'))};x.send(it.file)})}
 function send(items){
+  var groups={},order=[];
   items.forEach(function(it){
-    var li=mk(it.path,it.file.size);
-    q=q.then(function(){return put(it,li)}).then(function(){sig='';refresh()}).catch(function(e){li.querySelector('.st').textContent='Failed: '+e.message});
+    var i=it.path.indexOf('/');
+    if(i<=0){order.push({files:[it]});return}
+    var k=it.path.slice(0,i);
+    if(!groups[k]){groups[k]={name:k,files:[]};order.push(groups[k])}
+    groups[k].files.push(it);
+  });
+  order.forEach(function(g){
+    var total=g.files.reduce(function(a,x){return a+x.file.size},0);
+    var li=mk(g.name?g.name+' (folder, '+g.files.length+' files)':g.files[0].path,total);
+    q=q.then(async function(){
+      var done=0;
+      for(var i=0;i<g.files.length;i++){
+        var base=done;await put(g.files[i],function(loaded){setP(li,base+loaded,total)});
+        done+=g.files[i].file.size;sig='';refresh();
+      }
+      li.querySelector('.bar i').style.width='100%';li.querySelector('.st').textContent='Sent. Your friend can download it now.';
+    }).catch(function(e){li.querySelector('.st').textContent='Failed: '+e.message});
   });
 }
 $('files').onchange=function(){var l=[].slice.call(this.files).map(function(f){return{file:f,path:f.name}});this.value='';send(l)};

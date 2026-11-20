@@ -1,118 +1,152 @@
-// Relay server for the "send files with a 6-digit code" page.
-// Serves index.html and pairs a host and a joiner by code, then forwards
-// every message between them. Files pass through the server and are not stored.
-const http = require('http');
-const fs = require('fs');
-const path = require('path');
-const crypto = require('crypto');
-const { WebSocketServer } = require('ws');
+// Tiny file drop server. No dependencies. Needs Node 16 or newer.
+// Run:  PASSWORD=yourpassword node server.js
+'use strict';
+const http = require('http'), fs = require('fs'), path = require('path'), crypto = require('crypto');
+const { once } = require('events');
 
-const PORT = process.env.PORT || 3000;
-const MAX_ROOMS = 500;
-const WAIT_MS = 10 * 60 * 1000;      // a code expires after 10 minutes unused
-const MAX_FAILS = 8;                  // wrong codes allowed per IP per minute
-const INDEX = path.join(__dirname, 'index.html');
+const PORT = +process.env.PORT || 8080;
+const DATA = path.resolve(process.env.DATA_DIR || './shares');
+const KEEP_DAYS = +process.env.KEEP_DAYS || 7;          // shares are deleted after this many days
+const TRUST_PROXY = !!process.env.TRUST_PROXY;           // set if you run behind Caddy/nginx
+let PASSWORD = process.env.PASSWORD;
+if (!PASSWORD) { PASSWORD = crypto.randomBytes(4).toString('hex'); console.log('No PASSWORD set. Temporary upload password: ' + PASSWORD); }
+fs.mkdirSync(DATA, { recursive: true });
 
-const server = http.createServer((req, res) => {
-  const url = req.url.split('?')[0];
-  if (url === '/' || url === '/index.html') {
-    fs.readFile(INDEX, (err, data) => {
-      if (err) { res.writeHead(500); return res.end('index.html not found next to server.js'); }
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
-      res.end(data);
-    });
-  } else if (url === '/sw.js') {
-    fs.readFile(path.join(__dirname, 'sw.js'), (err, data) => {
-      if (err) { res.writeHead(404); return res.end('sw.js not found next to server.js'); }
-      res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'no-store', 'Service-Worker-Allowed': '/' });
-      res.end(data);
-    });
-  } else if (url === '/health') {
-    res.writeHead(200); res.end('ok');
-  } else {
-    res.writeHead(404); res.end('Not found');
-  }
-});
+const T = new Uint32Array(256);
+for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; T[n] = c >>> 0; }
+function crc32(c, buf) { c = ~c; for (let i = 0; i < buf.length; i++) c = T[(c ^ buf[i]) & 255] ^ (c >>> 8); return ~c >>> 0; }
 
-const wss = new WebSocketServer({ noServer: true, maxPayload: 4 * 1024 * 1024 });
-const rooms = new Map();   // code -> { host, timer }
-const fails = new Map();   // ip -> { n, t }
+const json = (res, code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj)); };
+const safeRel = p => String(p).replace(/[\u0000-\u001f\\]/g, '').split('/').filter(s => s && s !== '.' && s !== '..').join('/').slice(0, 500);
+const codeDir = c => /^\d{6}$/.test(c) ? path.join(DATA, c) : null;
+const readMeta = d => { try { return JSON.parse(fs.readFileSync(path.join(d, 'meta.json'), 'utf8')); } catch (e) { return null; } };
+const authOK = req => { const a = Buffer.from(String(req.headers['x-password'] || '')), b = Buffer.from(PASSWORD); return a.length === b.length && crypto.timingSafeEqual(a, b); };
 
-function ipOf(req) {
-  const f = req.headers['x-forwarded-for'];
-  return (f ? f.split(',')[0].trim() : req.socket.remoteAddress) || '?';
-}
-function newCode() {
-  for (let i = 0; i < 50; i++) {
-    const c = String(crypto.randomInt(0, 1000000)).padStart(6, '0');
-    if (!rooms.has(c)) return c;
-  }
-  return null;
-}
-function tooManyFails(ip) {
-  const f = fails.get(ip);
-  return f && Date.now() - f.t < 60000 && f.n >= MAX_FAILS;
-}
-function addFail(ip) {
-  const f = fails.get(ip);
-  if (!f || Date.now() - f.t >= 60000) fails.set(ip, { n: 1, t: Date.now() });
-  else f.n++;
-}
-function say(ws, text, close) {
-  try { ws.send(text); if (close) ws.close(); } catch (e) {}
-}
+const fails = new Map();   // simple guess protection for 6-digit codes
+function ipOf(req) { return (TRUST_PROXY && String(req.headers['x-forwarded-for'] || '').split(',')[0].trim()) || req.socket.remoteAddress; }
+function limited(ip) { const f = fails.get(ip); return f && f.n >= 15 && Date.now() - f.t < 60000; }
+function fail(ip) { const f = fails.get(ip); if (!f || Date.now() - f.t > 60000) fails.set(ip, { n: 1, t: Date.now() }); else f.n++; }
 
-server.on('upgrade', (req, socket, head) => {
-  if (req.url.split('?')[0] !== '/ws') return socket.destroy();
-  wss.handleUpgrade(req, socket, head, ws => wss.emit('connection', ws, req));
-});
-
-wss.on('connection', (ws, req) => {
-  const q = new URL(req.url, 'http://x').searchParams;
-  const role = q.get('role');
-  const ip = ipOf(req);
-  ws.isAlive = true;
-  ws.on('pong', () => { ws.isAlive = true; });
-  ws.on('error', () => {});
-
-  if (role === 'host') {
-    if (rooms.size >= MAX_ROOMS) return say(ws, '@full', true);
-    const code = newCode();
-    if (!code) return say(ws, '@full', true);
-    const room = { host: ws, timer: setTimeout(() => ws.close(), WAIT_MS) };
-    rooms.set(code, room);
-    say(ws, '@code:' + code);
-    ws.on('close', () => {
-      clearTimeout(room.timer);
-      if (rooms.get(code) === room) rooms.delete(code);
-      if (ws.peer) try { ws.peer.close(); } catch (e) {}
-    });
-  } else if (role === 'join') {
-    if (tooManyFails(ip)) return say(ws, '@limit', true);
-    const code = (q.get('code') || '').replace(/\D/g, '');
-    const room = rooms.get(code);
-    if (!room) { addFail(ip); return say(ws, '@nocode', true); }
-    rooms.delete(code);
-    clearTimeout(room.timer);
-    const host = room.host;
-    host.peer = ws; ws.peer = host;
-    say(host, '@paired'); say(ws, '@paired');
-    const relay = (from, to) => from.on('message', (data, isBinary) => {
-      if (to.readyState === 1) to.send(data, { binary: isBinary });
-    });
-    relay(host, ws); relay(ws, host);
-    ws.on('close', () => { try { host.close(); } catch (e) {} });
-  } else {
-    ws.close();
-  }
-});
-
-// keep connections alive through proxies and drop dead ones
-setInterval(() => {
-  wss.clients.forEach(ws => {
-    if (!ws.isAlive) return ws.terminate();
-    ws.isAlive = false; ws.ping();
+function sendFile(req, res, full, name) {
+  fs.stat(full, (e, st) => {
+    if (e || !st.isFile()) return json(res, 404, { error: 'not found' });
+    let start = 0, end = st.size - 1, status = 200;
+    const r = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range || '');
+    if (r && st.size) {
+      if (r[1] === '') start = Math.max(0, st.size - +r[2]); else { start = +r[1]; if (r[2] !== '') end = Math.min(end, +r[2]); }
+      if (start > end || start >= st.size) { res.writeHead(416, { 'Content-Range': 'bytes */' + st.size }); return res.end(); }
+      status = 206;
+    }
+    const h = { 'Content-Type': 'application/octet-stream', 'Accept-Ranges': 'bytes', 'Content-Length': st.size ? end - start + 1 : 0,
+      'Content-Disposition': "attachment; filename*=UTF-8''" + encodeURIComponent(name) };
+    if (status === 206) h['Content-Range'] = 'bytes ' + start + '-' + end + '/' + st.size;
+    res.writeHead(status, h);
+    if (!st.size) return res.end();
+    fs.createReadStream(full, { start, end }).pipe(res);
   });
-}, 25000);
+}
 
-server.listen(PORT, '0.0.0.0', () => console.log('Running on port ' + PORT));
+async function sendZip(res, dir, code, meta) {
+  let total = 98; for (const k of Object.keys(meta.files)) total += 124 + 2 * Buffer.byteLength(k) + meta.files[k].size;   // exact size, so the browser shows real progress
+  res.writeHead(200, { 'Content-Type': 'application/zip', 'Content-Length': total, 'Content-Disposition': 'attachment; filename="' + code + '.zip"' });
+  let off = 0, closed = false; res.on('close', () => closed = true);
+  const put = async b => { if (closed) throw new Error('closed'); off += b.length; if (!res.write(b)) await once(res, 'drain'); };
+  const d = new Date(), tm = (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1), dt = ((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate();
+  const ents = [];
+  try {
+    for (const rel of Object.keys(meta.files).sort()) {
+      const f = meta.files[rel], nm = Buffer.from(rel), h = Buffer.alloc(50 + nm.length);
+      h.writeUInt32LE(0x04034b50, 0); h.writeUInt16LE(45, 4); h.writeUInt16LE(0x0800, 6); h.writeUInt16LE(tm, 10); h.writeUInt16LE(dt, 12);
+      h.writeUInt32LE(f.crc, 14); h.writeUInt32LE(0xFFFFFFFF, 18); h.writeUInt32LE(0xFFFFFFFF, 22); h.writeUInt16LE(nm.length, 26); h.writeUInt16LE(20, 28);
+      nm.copy(h, 30); h.writeUInt16LE(1, 30 + nm.length); h.writeUInt16LE(16, 32 + nm.length);
+      h.writeBigUInt64LE(BigInt(f.size), 34 + nm.length); h.writeBigUInt64LE(BigInt(f.size), 42 + nm.length);
+      ents.push({ nm, f, off }); await put(h);
+      for await (const c of fs.createReadStream(path.join(dir, 'data', rel))) await put(c);
+    }
+    const cdOff = off;
+    for (const e of ents) {
+      const c = Buffer.alloc(74 + e.nm.length), p = 46 + e.nm.length;
+      c.writeUInt32LE(0x02014b50, 0); c.writeUInt16LE(45, 4); c.writeUInt16LE(45, 6); c.writeUInt16LE(0x0800, 8); c.writeUInt16LE(tm, 12); c.writeUInt16LE(dt, 14);
+      c.writeUInt32LE(e.f.crc, 16); c.writeUInt32LE(0xFFFFFFFF, 20); c.writeUInt32LE(0xFFFFFFFF, 24); c.writeUInt16LE(e.nm.length, 28); c.writeUInt16LE(28, 30); c.writeUInt32LE(0xFFFFFFFF, 42);
+      e.nm.copy(c, 46); c.writeUInt16LE(1, p); c.writeUInt16LE(24, p + 2);
+      c.writeBigUInt64LE(BigInt(e.f.size), p + 4); c.writeBigUInt64LE(BigInt(e.f.size), p + 12); c.writeBigUInt64LE(BigInt(e.off), p + 20);
+      await put(c);
+    }
+    const cs = off - cdOff, eo = off, z = Buffer.alloc(98);
+    z.writeUInt32LE(0x06064b50, 0); z.writeBigUInt64LE(44n, 4); z.writeUInt16LE(45, 12); z.writeUInt16LE(45, 14);
+    z.writeBigUInt64LE(BigInt(ents.length), 24); z.writeBigUInt64LE(BigInt(ents.length), 32); z.writeBigUInt64LE(BigInt(cs), 40); z.writeBigUInt64LE(BigInt(cdOff), 48);
+    z.writeUInt32LE(0x07064b50, 56); z.writeBigUInt64LE(BigInt(eo), 64); z.writeUInt32LE(1, 72);
+    z.writeUInt32LE(0x06054b50, 76); z.writeUInt16LE(0xFFFF, 84); z.writeUInt16LE(0xFFFF, 86); z.writeUInt32LE(0xFFFFFFFF, 88); z.writeUInt32LE(0xFFFFFFFF, 92);
+    await put(z); res.end();
+  } catch (e) { res.destroy(); }
+}
+
+http.createServer((req, res) => {
+  const u = new URL(req.url, 'http://x'), p = u.pathname, ip = ipOf(req);
+  let m;
+  if (req.method === 'GET' && p === '/') return fs.createReadStream(path.join(__dirname, 'index.html')).on('error', () => json(res, 500, { error: 'index.html missing' })).pipe(res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }) && res);
+
+  if (req.method === 'POST' && p === '/api/new') {
+    if (!authOK(req)) return json(res, 401, { error: 'wrong password' });
+    for (let i = 0; i < 50; i++) {
+      const c = String(crypto.randomInt(0, 1000000)).padStart(6, '0'), d = path.join(DATA, c);
+      if (fs.existsSync(d)) continue;
+      fs.mkdirSync(path.join(d, 'data'), { recursive: true });
+      fs.writeFileSync(path.join(d, 'meta.json'), JSON.stringify({ created: Date.now(), files: {}, done: false }));
+      return json(res, 200, { code: c });
+    }
+    return json(res, 500, { error: 'no free code' });
+  }
+
+  if (req.method === 'PUT' && (m = /^\/api\/up\/(\d{6})$/.exec(p))) {
+    if (!authOK(req)) return json(res, 401, { error: 'wrong password' });
+    const dir = codeDir(m[1]), meta = dir && readMeta(dir);
+    let rel; try { rel = safeRel(decodeURIComponent(req.headers['x-path'] || '')); } catch (e) { rel = ''; }
+    if (!meta || !rel) return json(res, 400, { error: 'bad request' });
+    if (meta.done) return json(res, 409, { error: 'already published' });
+    const full = path.join(dir, 'data', rel);
+    if (!full.startsWith(path.join(dir, 'data') + path.sep)) return json(res, 400, { error: 'bad path' });
+    fs.mkdirSync(path.dirname(full), { recursive: true });
+    const ws = fs.createWriteStream(full + '.part'); let crc = 0, size = 0, dead = false;
+    const cleanup = () => { if (dead) return; dead = true; ws.destroy(); fs.unlink(full + '.part', () => {}); };
+    req.on('data', c => { crc = crc32(crc, c); size += c.length; });
+    req.on('aborted', cleanup); req.on('error', cleanup); ws.on('error', () => { cleanup(); if (!res.headersSent) json(res, 500, { error: 'disk error' }); });
+    ws.on('finish', () => {
+      if (dead) return;
+      fs.rename(full + '.part', full, err => {
+        if (err) return json(res, 500, { error: 'disk error' });
+        const mt = readMeta(dir); mt.files[rel] = { size, crc }; fs.writeFileSync(path.join(dir, 'meta.json'), JSON.stringify(mt));
+        json(res, 200, { ok: true, size });
+      });
+    });
+    return req.pipe(ws);
+  }
+
+  if (req.method === 'POST' && (m = /^\/api\/done\/(\d{6})$/.exec(p))) {      // sender finished: publish
+    if (!authOK(req)) return json(res, 401, { error: 'wrong password' });
+    const dir = codeDir(m[1]), meta = dir && readMeta(dir);
+    if (!meta) return json(res, 404, { error: 'no such code' });
+    meta.done = true; fs.writeFileSync(path.join(dir, 'meta.json'), JSON.stringify(meta));
+    return json(res, 200, { ok: true });
+  }
+
+  if (req.method === 'GET' && (m = /^\/(api\/list|zip|d)\/(\d{6})(?:\/(.*))?$/.exec(p))) {
+    if (limited(ip)) return json(res, 429, { error: 'too many tries' });
+    const dir = codeDir(m[2]), meta = dir && readMeta(dir);
+    if (!meta) { fail(ip); return json(res, 404, { error: 'no such code' }); }
+    if (m[1] === 'api/list') return json(res, 200, { done: !!meta.done, files: Object.keys(meta.files).sort().map(k => ({ path: k, size: meta.files[k].size })) });
+    if (!meta.done) return json(res, 409, { error: 'still publishing' });
+    if (m[1] === 'zip') return sendZip(res, dir, m[2], meta);
+    let rel; try { rel = safeRel(decodeURIComponent(m[3] || '')); } catch (e) { rel = ''; }
+    if (!meta.files[rel]) return json(res, 404, { error: 'no such file' });
+    return sendFile(req, res, path.join(dir, 'data', rel), rel.split('/').pop());
+  }
+  json(res, 404, { error: 'not found' });
+}).listen(PORT, () => console.log('Running on port ' + PORT + '. Files are kept in ' + DATA + ' for ' + KEEP_DAYS + ' days.')).requestTimeout = 0;
+
+setInterval(() => {
+  for (const n of fs.readdirSync(DATA)) {
+    const d = path.join(DATA, n), mt = readMeta(d);
+    if (!mt || Date.now() - mt.created > KEEP_DAYS * 864e5) fs.rmSync(d, { recursive: true, force: true });
+  }
+}, 3600e3).unref();

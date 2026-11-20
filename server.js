@@ -6,7 +6,7 @@ const { once } = require('events');
 
 const PORT = +process.env.PORT || 8080;
 const DATA = path.resolve(process.env.DATA_DIR || './shares');
-const KEEP_DAYS = +process.env.KEEP_DAYS || 7;          // shares are deleted after this many days
+const KEEP_DAYS = +process.env.KEEP_DAYS || 7;          // a room is deleted this many days after its last upload
 const TRUST_PROXY = !!process.env.TRUST_PROXY;           // set if you run behind Caddy/nginx
 fs.mkdirSync(DATA, { recursive: true });
 
@@ -18,8 +18,7 @@ const json = (res, code, obj) => { res.writeHead(code, { 'Content-Type': 'applic
 const safeRel = p => String(p).replace(/[\u0000-\u001f\\]/g, '').split('/').filter(s => s && s !== '.' && s !== '..').join('/').slice(0, 500);
 const codeDir = c => /^\d{6}$/.test(c) ? path.join(DATA, c) : null;
 const readMeta = d => { try { return JSON.parse(fs.readFileSync(path.join(d, 'meta.json'), 'utf8')); } catch (e) { return null; } };
-// each share has its own secret token, so only the page that created a code can add files to it
-const tokOK = (req, meta) => { const a = Buffer.from(String(req.headers['x-token'] || '')), b = Buffer.from(String(meta.token || '')); return b.length > 0 && a.length === b.length && crypto.timingSafeEqual(a, b); };
+const reserved = new Set();   // file names being uploaded right now
 const made = new Map();   // limit how many codes one address can create per hour
 function makeLimited(ip) { const f = made.get(ip); if (!f || Date.now() - f.t > 3600e3) { made.set(ip, { n: 1, t: Date.now() }); return false; } return ++f.n > 30; }
 
@@ -90,53 +89,54 @@ http.createServer((req, res) => {
   if (req.method === 'POST' && p === '/api/new') {
     if (makeLimited(ip)) return json(res, 429, { error: 'too many codes' });
     for (let i = 0; i < 50; i++) {
-      const c = String(crypto.randomInt(0, 1000000)).padStart(6, '0'), d = path.join(DATA, c), token = crypto.randomBytes(16).toString('hex');
+      const c = String(crypto.randomInt(0, 1000000)).padStart(6, '0'), d = path.join(DATA, c);
       if (fs.existsSync(d)) continue;
       fs.mkdirSync(path.join(d, 'data'), { recursive: true });
-      fs.writeFileSync(path.join(d, 'meta.json'), JSON.stringify({ created: Date.now(), files: {}, done: false, token }));
-      return json(res, 200, { code: c, token });
+      fs.writeFileSync(path.join(d, 'meta.json'), JSON.stringify({ created: Date.now(), touched: Date.now(), files: {} }));
+      return json(res, 200, { code: c });
     }
     return json(res, 500, { error: 'no free code' });
   }
 
-  if (req.method === 'PUT' && (m = /^\/api\/up\/(\d{6})$/.exec(p))) {
+  if (req.method === 'PUT' && (m = /^\/api\/up\/(\d{6})$/.exec(p))) {        // anyone who has the code can add files
+    if (limited(ip)) return json(res, 429, { error: 'too many tries' });
     const dir = codeDir(m[1]), meta = dir && readMeta(dir);
-    if (meta && !tokOK(req, meta)) return json(res, 401, { error: 'not your code' });
+    if (!meta) { fail(ip); return json(res, 404, { error: 'no such code' }); }
     let rel; try { rel = safeRel(decodeURIComponent(req.headers['x-path'] || '')); } catch (e) { rel = ''; }
-    if (!meta || !rel) return json(res, 400, { error: 'bad request' });
-    if (meta.done) return json(res, 409, { error: 'already published' });
-    const full = path.join(dir, 'data', rel);
-    if (!full.startsWith(path.join(dir, 'data') + path.sep)) return json(res, 400, { error: 'bad path' });
+    if (!rel) return json(res, 400, { error: 'bad request' });
+    const from = String(req.headers['x-from'] || '').replace(/[^\w-]/g, '').slice(0, 24);
+    const base = path.join(dir, 'data');
+    // never overwrite: if the name is taken, use "name (2).ext"
+    const dot = rel.lastIndexOf('.'), slash = rel.lastIndexOf('/'), hasExt = dot > slash + 1;
+    const stem = hasExt ? rel.slice(0, dot) : rel, ext = hasExt ? rel.slice(dot) : '';
+    let n = 1, final = rel, full = path.join(base, final);
+    const taken = () => meta.files[final] || fs.existsSync(full) || fs.existsSync(full + '.part') || reserved.has(full);
+    while (taken()) { n++; final = stem + ' (' + n + ')' + ext; full = path.join(base, final); }
+    if (!full.startsWith(base + path.sep)) return json(res, 400, { error: 'bad path' });
+    reserved.add(full);
     fs.mkdirSync(path.dirname(full), { recursive: true });
     const ws = fs.createWriteStream(full + '.part'); let crc = 0, size = 0, dead = false;
-    const cleanup = () => { if (dead) return; dead = true; ws.destroy(); fs.unlink(full + '.part', () => {}); };
+    const cleanup = () => { if (dead) return; dead = true; reserved.delete(full); ws.destroy(); fs.unlink(full + '.part', () => {}); };
     req.on('data', c => { crc = crc32(crc, c); size += c.length; });
     req.on('aborted', cleanup); req.on('error', cleanup); ws.on('error', () => { cleanup(); if (!res.headersSent) json(res, 500, { error: 'disk error' }); });
     ws.on('finish', () => {
       if (dead) return;
       fs.rename(full + '.part', full, err => {
+        reserved.delete(full);
         if (err) return json(res, 500, { error: 'disk error' });
-        const mt = readMeta(dir); mt.files[rel] = { size, crc }; fs.writeFileSync(path.join(dir, 'meta.json'), JSON.stringify(mt));
-        json(res, 200, { ok: true, size });
+        const mt = readMeta(dir); mt.files[final] = { size, crc, from, t: Date.now() }; mt.touched = Date.now();
+        fs.writeFileSync(path.join(dir, 'meta.json'), JSON.stringify(mt));
+        json(res, 200, { ok: true, size, name: final });
       });
     });
     return req.pipe(ws);
-  }
-
-  if (req.method === 'POST' && (m = /^\/api\/done\/(\d{6})$/.exec(p))) {      // sender finished: publish
-    const dir = codeDir(m[1]), meta = dir && readMeta(dir);
-    if (!meta) return json(res, 404, { error: 'no such code' });
-    if (!tokOK(req, meta)) return json(res, 401, { error: 'not your code' });
-    meta.done = true; fs.writeFileSync(path.join(dir, 'meta.json'), JSON.stringify(meta));
-    return json(res, 200, { ok: true });
   }
 
   if (req.method === 'GET' && (m = /^\/(api\/list|zip|d)\/(\d{6})(?:\/(.*))?$/.exec(p))) {
     if (limited(ip)) return json(res, 429, { error: 'too many tries' });
     const dir = codeDir(m[2]), meta = dir && readMeta(dir);
     if (!meta) { fail(ip); return json(res, 404, { error: 'no such code' }); }
-    if (m[1] === 'api/list') return json(res, 200, { done: !!meta.done, files: Object.keys(meta.files).sort().map(k => ({ path: k, size: meta.files[k].size })) });
-    if (!meta.done) return json(res, 409, { error: 'still publishing' });
+    if (m[1] === 'api/list') return json(res, 200, { files: Object.keys(meta.files).map(k => ({ path: k, size: meta.files[k].size, from: meta.files[k].from || '', t: meta.files[k].t || 0 })).sort((a, b) => b.t - a.t) });
     if (m[1] === 'zip') return sendZip(res, dir, m[2], meta);
     let rel; try { rel = safeRel(decodeURIComponent(m[3] || '')); } catch (e) { rel = ''; }
     if (!meta.files[rel]) return json(res, 404, { error: 'no such file' });
@@ -149,6 +149,6 @@ http.createServer((req, res) => {
 setInterval(() => {
   for (const n of fs.readdirSync(DATA)) {
     const d = path.join(DATA, n), mt = readMeta(d);
-    if (!mt || Date.now() - mt.created > KEEP_DAYS * 864e5) fs.rmSync(d, { recursive: true, force: true });
+    if (!mt || Date.now() - (mt.touched || mt.created) > KEEP_DAYS * 864e5) fs.rmSync(d, { recursive: true, force: true });
   }
 }, 3600e3).unref();

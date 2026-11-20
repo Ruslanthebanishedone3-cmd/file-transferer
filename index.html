@@ -26,15 +26,17 @@ ul{list-style:none;margin:0;padding:0}li{padding:10px 0;border-top:1px solid var
 .name{font-weight:600;word-break:break-all}.meta{display:flex;justify-content:space-between;gap:10px;color:var(--mute);font-size:.88rem}
 .bar{height:6px;background:var(--bg);border-radius:4px;overflow:hidden;margin-top:6px}.bar i{display:block;height:100%;width:0;background:var(--accent)}
 a{color:var(--ink);font-weight:600}
+.badge{display:inline-block;font-size:.75rem;font-weight:700;padding:1px 8px;border:1.5px solid var(--line);border-radius:99px;margin-right:8px}
+.badge.me{border-color:var(--accent)}.empty{color:var(--mute)}
 </style></head><body><main>
 <h1>Send files with a 6-digit code</h1>
-<p class="lead">Publish files once. Your friend downloads them as normal with the code, from anywhere.</p>
+<p class="lead">Share files both ways with a friend, as many times as you like. Downloads are normal browser downloads.</p>
 <div id="status" class="status">Not connected</div>
 <div id="srvNote" class="msg err hidden" role="alert"></div>
 
 <section id="connect" class="two">
   <div class="panel">
-    <h2>I send first</h2>
+    <h2>Start a room</h2>
     <p class="msg" style="margin-top:0">Get a code and give it to your friend.</p>
     <button id="mk" class="primary">Get my code</button>
   </div>
@@ -46,23 +48,24 @@ a{color:var(--ink);font-weight:600}
 </section>
 <div id="msg" class="msg" role="status"></div>
 
-<section id="send" class="hidden">
+<section id="room" class="hidden">
   <div class="panel">
-    <h2>Give your friend this code</h2>
+    <h2>Room code</h2>
     <div class="code" id="codeOut"></div>
-    <div class="row" style="justify-content:flex-start;margin-top:0"><button id="cp">Copy link</button></div>
+    <p class="msg" style="margin-top:0">You and your friend both use this code. Either of you can send files, as many times as you like.</p>
+    <div class="row" style="justify-content:flex-start;margin-top:0"><button id="cp">Copy link</button><button id="leave">Leave room</button></div>
+  </div>
+  <div class="panel">
+    <h2>Send files</h2>
     <div id="drop" class="drop"><span id="dropTxt">Drop files or folders here</span>
       <div class="row"><label class="btn">Choose files<input type="file" id="files" multiple></label><label class="btn" id="dirBtn">Choose folder<input type="file" id="dir" webkitdirectory></label></div></div>
     <div id="sMsg" class="msg" role="status"></div>
     <ul id="up"></ul>
   </div>
-</section>
-
-<section id="recv" class="hidden">
   <div class="panel">
-    <div id="rMsg" class="msg" role="status" style="margin-top:0"></div>
-    <div id="zipRow" class="hidden"><a id="zipA" href="#"><button class="primary">Download all as .zip</button></a></div>
-    <ul id="down"></ul>
+    <h2>Files in this room</h2>
+    <div id="zipRow" class="hidden" style="margin-bottom:8px"><a id="zipA" href="#"><button class="primary">Download all as .zip</button></a></div>
+    <ul id="list"><li class="empty">No files yet.</li></ul>
   </div>
 </section>
 </main>
@@ -82,44 +85,84 @@ if(/iPhone|iPad|iPod/.test(navigator.userAgent)){$('dirBtn').classList.add('hidd
   fetch('/health',{cache:'no-store'}).then(function(r){if(!r.ok)throw 0}).catch(function(){show('Cannot reach the server at '+location.origin+'. Check that server.js is running and the address and port are correct.')});
 })();
 
-/* ---------- send ---------- */
-var code=null,token=null,busy=false,published=false;
+var myId=(function(){try{var v=localStorage.getItem('fid');if(!v){v=Math.random().toString(36).slice(2,12);localStorage.setItem('fid',v)}return v}catch(e){return Math.random().toString(36).slice(2,12)}})();
+var code=null,timer=null,sig='',q=Promise.resolve();
+var enc=function(p){return p.split('/').map(encodeURIComponent).join('/')};
+
+/* ---------- enter a room ---------- */
+function enter(c){
+  code=c;try{history.replaceState(null,'','#'+c)}catch(e){}
+  $('connect').classList.add('hidden');$('room').classList.remove('hidden');msg('');
+  $('codeOut').textContent=c;status('Connected to room',true);
+  $('cp').onclick=function(){var b=this,l=location.origin+'/#'+c;(navigator.clipboard?navigator.clipboard.writeText(l):Promise.reject()).then(function(){b.textContent='Copied'},function(){b.textContent=l})};
+  $('leave').onclick=function(){clearInterval(timer);try{history.replaceState(null,'',location.pathname)}catch(e){}location.reload()};
+  refresh();timer=setInterval(refresh,3000);
+}
 $('mk').onclick=async function(){
   var b=this;b.disabled=true;msg('Getting a code\u2026');
   try{
     var r=await fetch('/api/new',{method:'POST'});
     if(r.status===429){msg('Too many codes requested. Try again later.',true);b.disabled=false;return}
     if(!r.ok)throw 0;
-    var j=await r.json();code=j.code;token=j.token;
-    $('connect').classList.add('hidden');msg('');$('send').classList.remove('hidden');$('codeOut').textContent=code;
-    status('Code ready. Choose your files.');sMsg('Your friend can enter the code now. Downloads open when publishing finishes.');
-    $('cp').onclick=function(){var c=this,l=location.origin+'/#'+code;(navigator.clipboard?navigator.clipboard.writeText(l):Promise.reject()).then(function(){c.textContent='Copied'},function(){c.textContent=l})};
+    enter((await r.json()).code);
   }catch(e){msg('Could not reach the server.',true);b.disabled=false}
 };
+async function join(){
+  var c=$('codeIn').value.replace(/\D/g,'');if(c.length!==6){msg('Enter all 6 digits.',true);return}
+  $('join').disabled=true;msg('Connecting\u2026');
+  try{
+    var r=await fetch('/api/list/'+c,{cache:'no-store'});
+    if(r.status===429){msg('Too many tries. Wait a minute.',true);$('join').disabled=false;return}
+    if(!r.ok){msg('No room with that code. Check the digits, it may also have expired.',true);$('join').disabled=false;return}
+    enter(c);
+  }catch(e){msg('Could not reach the server.',true);$('join').disabled=false}
+}
+$('join').onclick=join;$('codeIn').addEventListener('keydown',function(e){if(e.key==='Enter')join()});
+if(/^#\d{6}$/.test(location.hash)){$('codeIn').value=location.hash.slice(1);join()}
+
+/* ---------- files in the room (refreshes by itself) ---------- */
+async function refresh(){
+  if(!code||document.visibilityState==='hidden')return;
+  try{
+    var r=await fetch('/api/list/'+code,{cache:'no-store'});
+    if(r.status===404){clearInterval(timer);status('Room closed');sMsg('This room has expired. Leave and start a new one.',true);return}
+    if(!r.ok)return;
+    var j=await r.json(),s=JSON.stringify(j.files);if(s===sig)return;sig=s;render(j.files);
+  }catch(e){}
+}
+document.addEventListener('visibilitychange',function(){if(document.visibilityState==='visible')refresh()});
+function render(files){
+  var ul=$('list');ul.innerHTML='';
+  if(!files.length){ul.innerHTML='<li class="empty">No files yet.</li>';$('zipRow').classList.add('hidden');return}
+  files.forEach(function(f){
+    var li=document.createElement('li'),a=document.createElement('a'),bd=document.createElement('span'),mine=f.from===myId;
+    li.innerHTML='<div class="name"></div><div class="meta"><span></span><span></span></div>';
+    li.querySelector('.name').textContent=f.path;
+    bd.className='badge'+(mine?' me':'');bd.textContent=mine?'You':'Friend';
+    a.href='/d/'+code+'/'+enc(f.path);a.textContent='Download';
+    var sp=li.querySelectorAll('.meta span');sp[0].appendChild(bd);sp[0].appendChild(a);sp[1].textContent=fmt(f.size);
+    ul.appendChild(li);
+  });
+  if(files.length>1){$('zipA').href='/zip/'+code;$('zipRow').classList.remove('hidden')}else $('zipRow').classList.add('hidden');
+}
+
+/* ---------- sending (you can keep adding more, any time) ---------- */
 function mk(name,size){var li=document.createElement('li');li.innerHTML='<div class="name"></div><div class="meta"><span class="st">Waiting</span><span></span></div><div class="bar"><i></i></div>';
   li.querySelector('.name').textContent=name;li.querySelectorAll('.meta span')[1].textContent=fmt(size);$('up').insertBefore(li,$('up').firstChild);return li}
 function put(it,li){return new Promise(function(res,rej){
   var x=new XMLHttpRequest(),t=0;x.open('PUT','/api/up/'+code);
-  x.setRequestHeader('X-Token',token);x.setRequestHeader('X-Path',encodeURIComponent(it.path));
-  x.upload.onprogress=function(e){var n=performance.now();if(n-t<100&&e.loaded<e.total)return;t=n;var p=e.total?e.loaded/e.total*100:100;li.querySelector('.bar i').style.width=p+'%';li.querySelector('.st').textContent='Publishing '+Math.floor(p)+'%'};
-  x.onload=function(){if(x.status===200){li.querySelector('.bar i').style.width='100%';li.querySelector('.st').textContent='Published';res()}else rej(new Error('HTTP '+x.status))};
+  x.setRequestHeader('X-From',myId);x.setRequestHeader('X-Path',encodeURIComponent(it.path));
+  x.upload.onprogress=function(e){var n=performance.now();if(n-t<100&&e.loaded<e.total)return;t=n;var p=e.total?e.loaded/e.total*100:100;li.querySelector('.bar i').style.width=p+'%';li.querySelector('.st').textContent='Sending '+Math.floor(p)+'%'};
+  x.onload=function(){if(x.status===200){li.querySelector('.bar i').style.width='100%';li.querySelector('.st').textContent='Sent. Your friend can download it now.';res()}else rej(new Error(x.status===404?'room expired':'HTTP '+x.status))};
   x.onerror=function(){rej(new Error('network'))};x.send(it.file)})}
-async function upload(items){
-  if(busy||published||!code||!items.length)return;
-  busy=true;status('Publishing\u2026');
-  for(var i=0;i<items.length;i++){
-    var li=mk(items[i].path,items[i].file.size);sMsg('Publishing file '+(i+1)+' of '+items.length+'\u2026');
-    try{await put(items[i],li)}catch(e){li.querySelector('.st').textContent='Failed: '+e.message;sMsg('Publishing failed. Check your connection and choose the files again.',true);status('Code ready. Choose your files.');busy=false;return}
-  }
-  try{
-    var d=await fetch('/api/done/'+code,{method:'POST',headers:{'X-Token':token}});
-    if(!d.ok)throw 0;
-    published=true;$('drop').classList.add('hidden');status('Published',true);sMsg('Published. Your friend can download now.');
-  }catch(e){sMsg('Files uploaded but could not finish publishing. Choose the files again.',true)}
-  busy=false;
+function send(items){
+  items.forEach(function(it){
+    var li=mk(it.path,it.file.size);
+    q=q.then(function(){return put(it,li)}).then(function(){sig='';refresh()}).catch(function(e){li.querySelector('.st').textContent='Failed: '+e.message});
+  });
 }
-$('files').onchange=function(){var l=[].slice.call(this.files).map(function(f){return{file:f,path:f.name}});this.value='';upload(l)};
-$('dir').onchange=function(){var l=[].slice.call(this.files).map(function(f){return{file:f,path:f.webkitRelativePath||f.name}});this.value='';upload(l)};
+$('files').onchange=function(){var l=[].slice.call(this.files).map(function(f){return{file:f,path:f.name}});this.value='';send(l)};
+$('dir').onchange=function(){var l=[].slice.call(this.files).map(function(f){return{file:f,path:f.webkitRelativePath||f.name}});this.value='';send(l)};
 async function walk(en,path,o){
   if(en.isFile){o.push({file:await new Promise(function(r,j){en.file(r,j)}),path:path+en.name});return}
   var rd=en.createReader(),all=[];for(;;){var b=await new Promise(function(r,j){rd.readEntries(r,j)});if(!b.length)break;all=all.concat(b)}
@@ -132,34 +175,7 @@ dz.addEventListener('drop',async function(e){
   var its=e.dataTransfer.items,ents=[];if(its&&its.length&&its[0].webkitGetAsEntry)for(var i=0;i<its.length;i++){var en=its[i].webkitGetAsEntry();if(en)ents.push(en)}
   var fl=[].slice.call(e.dataTransfer.files),o=[];
   if(ents.length){for(var j=0;j<ents.length;j++)await walk(ents[j],'',o)}else o=fl.map(function(f){return{file:f,path:f.name}});
-  upload(o);
+  send(o);
 });
-
-/* ---------- receive ---------- */
-var enc=function(p){return p.split('/').map(encodeURIComponent).join('/')},poll=null;
-async function look(c){
-  clearTimeout(poll);
-  try{
-    var r=await fetch('/api/list/'+c);
-    if(r.status===429){msg('Too many tries. Wait a minute.',true);$('join').disabled=false;return}
-    if(!r.ok){msg('No files for that code. Check the digits, it may also have expired.',true);$('join').disabled=false;return}
-    var j=await r.json(),n=j.files.length;
-    $('connect').classList.add('hidden');$('recv').classList.remove('hidden');msg('');
-    if(!j.done){status('Waiting for the sender');$('rMsg').textContent='The sender is still publishing ('+n+' file'+(n===1?'':'s')+' so far). This page updates by itself.';poll=setTimeout(function(){look(c)},2500);return}
-    status('Ready to download',true);$('rMsg').textContent=n+' file'+(n===1?'':'s')+' ready to download.';
-    $('down').innerHTML='';
-    j.files.forEach(function(f){var li=document.createElement('li'),a=document.createElement('a');
-      li.innerHTML='<div class="name"></div><div class="meta"><span></span><span></span></div>';
-      li.querySelector('.name').textContent=f.path;li.querySelectorAll('.meta span')[1].textContent=fmt(f.size);
-      a.href='/d/'+c+'/'+enc(f.path);a.textContent='Download';li.querySelectorAll('.meta span')[0].appendChild(a);$('down').appendChild(li)});
-    if(n>1){$('zipA').href='/zip/'+c;$('zipRow').classList.remove('hidden')}
-  }catch(e){msg('Could not reach the server.',true);$('join').disabled=false}
-}
-function join(){
-  var c=$('codeIn').value.replace(/\D/g,'');if(c.length!==6){msg('Enter all 6 digits.',true);return}
-  $('join').disabled=true;msg('Connecting\u2026');look(c);
-}
-$('join').onclick=join;$('codeIn').addEventListener('keydown',function(e){if(e.key==='Enter')join()});
-if(/^#\d{6}$/.test(location.hash)){$('codeIn').value=location.hash.slice(1);join()}
 })();
 </script></body></html>

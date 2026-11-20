@@ -21,6 +21,12 @@ const server = http.createServer((req, res) => {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
       res.end(data);
     });
+  } else if (url === '/sw.js') {
+    fs.readFile(path.join(__dirname, 'sw.js'), (err, data) => {
+      if (err) { res.writeHead(404); return res.end('sw.js not found next to server.js'); }
+      res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'no-store', 'Service-Worker-Allowed': '/' });
+      res.end(data);
+    });
   } else if (url === '/health') {
     res.writeHead(200); res.end('ok');
   } else {

@@ -197,6 +197,8 @@ function diskSink(w){
 }
 
 /* storage on the device itself (works in Safari on iPhone) */
+var USE_SW=('serviceWorker' in navigator)&&window.isSecureContext&&!/iPhone|iPad|iPod/.test(navigator.userAgent)&&!(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
+if(USE_SW)navigator.serviceWorker.register('/sw.js').catch(function(){USE_SW=false});
 var CAN_OPFS=!!(navigator.storage&&navigator.storage.getDirectory&&window.Worker);
 var IOS=/iPhone|iPad|iPod/.test(navigator.userAgent)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
 if(IOS){$('dir').parentNode.classList.add('hidden');$('dropTxt').textContent='Choose files to send'}
@@ -234,6 +236,25 @@ async function opfsSink(){
   };
 }
 
+/* straight into the browser's own download (progress bar in the browser, saved while it arrives) */
+async function swSink(name,size){
+  var reg=await Promise.race([navigator.serviceWorker.ready,new Promise(function(_,j){setTimeout(function(){j(new Error('sw'))},4000)})]);
+  var id=uid()+uid(),ch=new MessageChannel(),cancelled=false,ping=null,frame=null;
+  await new Promise(function(res,rej){
+    ch.port1.onmessage=function(e){if(e.data&&e.data.t==='ready')res()};
+    setTimeout(function(){rej(new Error('sw'))},3000);
+    reg.active.postMessage({t:'new',id:id,name:name,size:size},[ch.port2]);
+  });
+  ch.port1.onmessage=function(e){if(e.data&&e.data.t==='cancel')cancelled=true};
+  ping=setInterval(function(){try{reg.active.postMessage({t:'ping'})}catch(e){}},10000);
+  frame=document.createElement('iframe');frame.hidden=true;frame.src='/_dl/'+id+'/'+encodeURIComponent(name);document.body.appendChild(frame);
+  function done(){clearInterval(ping);setTimeout(function(){if(frame.parentNode)frame.parentNode.removeChild(frame)},60000)}
+  return{
+    write:function(b){if(!cancelled)ch.port1.postMessage({t:'chunk',b:b},[b]);return Promise.resolve()},
+    close:function(){ch.port1.postMessage({t:'end'});done()}
+  };
+}
+
 /* receive */
 function onData(d){
   if(typeof d==='string'){
@@ -251,7 +272,7 @@ function onData(d){
 function fail(){if(rx&&rx.li)rx.li.querySelector('.st').textContent='Error while saving'}
 async function ctl(m){
   if(m.t==='folder'){
-    rx={kind:'folder',id:m.id,name:clean(m.name),count:m.count,size:m.size,got:0,done:0,processed:0,lastAck:0,li:mkItem('inList',m.name+' (folder, '+m.count+' files)',m.size)};
+    rx={kind:'folder',zipSize:m.zipSize,id:m.id,name:clean(m.name),count:m.count,size:m.size,got:0,done:0,processed:0,lastAck:0,li:mkItem('inList',m.name+' (folder, '+m.count+' files)',m.size)};
     await offer(rx,rx.name+'.zip');
   }else if(m.t==='meta'&&m.inFolder&&rx&&rx.kind==='folder'){
     await rx.zip.startFile(clean(m.name));
@@ -270,6 +291,9 @@ async function ctl(m){
 }
 async function offer(r,fname){
   var st=r.li.querySelector('.st');
+  if(USE_SW){
+    try{r.sink=await swSink(fname,r.kind==='folder'?r.zipSize:r.size);r.sw=true;if(r.kind==='folder')r.zip=zipWriter(r.sink);return}catch(e){r.sink=null}
+  }
   if(r.size>MEM&&CAN_OPFS){
     try{r.sink=await opfsSink();r.opfs=true;if(r.kind==='folder')r.zip=zipWriter(r.sink);return}catch(e){r.sink=null}
   }
@@ -278,13 +302,15 @@ async function offer(r,fname){
 }
 async function chunk(d){
   var r=rx;if(!r||!r.sink)return;
+  var n=d.byteLength;
   if(r.kind==='folder')await r.zip.chunk(d);else await r.sink.write(d);
-  r.processed+=d.byteLength;
+  r.processed+=n;
   if(r.processed-r.lastAck>=ACK){r.lastAck=r.processed;send({t:'ack',id:r.id,n:r.processed})}
 }
 async function finalize(r){
   prog(r.li,1,1,'',1);var st=r.li.querySelector('.st');st.textContent='';
   var fn=r.kind==='folder'?r.name+'.zip':r.name.split('/').pop(),txt=r.kind==='folder'?'Download as .zip':'Save file';
+  if(r.sw){r.sink.close();st.textContent="Saved to your browser's download location";return}
   if(r.disk){await r.sink.close();st.textContent='Saved to disk';return}
   if(r.opfs){link(st,URL.createObjectURL(await r.sink.close()),fn,txt);return}
   link(st,URL.createObjectURL(new Blob(r.mem,{type:r.kind==='folder'?'application/zip':(r.type||'application/octet-stream')})),fn,txt);
@@ -327,7 +353,8 @@ async function sendFolder(name,list){
   var total=list.reduce(function(a,x){return a+x.file.size},0),s=0;
   var li=mkItem('outList',name+' (folder, '+list.length+' files)',total),o=out={id:uid(),acked:0,sent:0,go:false},st=li.querySelector('.st');
   try{
-    send({t:'folder',id:o.id,name:name,count:list.length,size:total});
+    var te=new TextEncoder(),zs=98;list.forEach(function(x){var n=te.encode(clean(x.path)).length;zs+=148+2*n+x.file.size});
+    send({t:'folder',id:o.id,name:name,count:list.length,size:total,zipSize:zs});
     for(var i=0;i<list.length;i++){
       var x=list[i];
       send({t:'meta',name:x.path,size:x.file.size,type:x.file.type,inFolder:true});

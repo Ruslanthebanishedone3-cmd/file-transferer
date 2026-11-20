@@ -270,26 +270,11 @@ async function ctl(m){
 }
 async function offer(r,fname){
   var st=r.li.querySelector('.st');
-  if(r.size>MEM&&CAN_DISK){
-    var b=document.createElement('button'),x=document.createElement('button');
-    b.textContent='Save to disk ('+fmt(r.size)+')';x.textContent='Decline';st.textContent='';st.append(b,x);
-    b.onclick=async function(){
-      try{
-        var h=await window.showSaveFilePicker({suggestedName:fname});
-        var w=await h.createWritable();
-        r.sink=diskSink(w);r.disk=true;if(r.kind==='folder')r.zip=zipWriter(r.sink);
-        st.textContent='Receiving 0%';send({t:'go',id:r.id});
-      }catch(e){}
-    };
-    x.onclick=function(){send({t:'no',id:r.id});st.textContent='Declined';if(rx===r)rx=null};
-    return;
-  }
   if(r.size>MEM&&CAN_OPFS){
-    try{r.sink=await opfsSink();r.opfs=true;if(r.kind==='folder')r.zip=zipWriter(r.sink);send({t:'go',id:r.id});return}catch(e){r.sink=null}
+    try{r.sink=await opfsSink();r.opfs=true;if(r.kind==='folder')r.zip=zipWriter(r.sink);return}catch(e){r.sink=null}
   }
   r.mem=[];r.sink=memSink(r.mem);if(r.kind==='folder')r.zip=zipWriter(r.sink);
-  if(r.size>MEM){var nd=document.createElement('div');nd.className='meta';nd.textContent='Large transfer kept in memory. Use Chrome or Edge on a computer, or Safari 15.2 or newer, for unlimited size.';r.li.appendChild(nd)}
-  send({t:'go',id:r.id});
+  if(r.size>MEM){var nd=document.createElement('div');nd.className='meta';nd.textContent='Large transfer kept in memory because this browser has no storage it can write to.';r.li.appendChild(nd)}
 }
 async function chunk(d){
   var r=rx;if(!r||!r.sink)return;
@@ -332,11 +317,9 @@ async function sendFile(f){
   var li=mkItem('outList',f.name,f.size),o=out={id:uid(),acked:0,sent:0,go:false},st=li.querySelector('.st'),s=0;
   try{
     send({t:'meta',id:o.id,name:f.name,size:f.size,type:f.type});
-    st.textContent='Waiting for your friend to accept\u2026';
-    await goWait(o);
     await pushFile(f,o,function(n){s+=n;prog(li,s,f.size,'Sending')});
     send({t:'end'});prog(li,1,1,'',1);st.textContent='Sent';
-  }catch(e){st.textContent=o.no?'Declined by your friend':'Failed: connection closed'}
+  }catch(e){st.textContent='Failed: connection closed'}
   if(out===o)out=null;
 }
 async function sendFolder(name,list){
@@ -345,8 +328,6 @@ async function sendFolder(name,list){
   var li=mkItem('outList',name+' (folder, '+list.length+' files)',total),o=out={id:uid(),acked:0,sent:0,go:false},st=li.querySelector('.st');
   try{
     send({t:'folder',id:o.id,name:name,count:list.length,size:total});
-    st.textContent='Waiting for your friend to accept\u2026';
-    await goWait(o);
     for(var i=0;i<list.length;i++){
       var x=list[i];
       send({t:'meta',name:x.path,size:x.file.size,type:x.file.type,inFolder:true});
@@ -354,7 +335,7 @@ async function sendFolder(name,list){
       send({t:'end'});
     }
     prog(li,1,1,'',1);st.textContent='Sent';
-  }catch(e){st.textContent=o.no?'Declined by your friend':'Failed: connection closed'}
+  }catch(e){st.textContent='Failed: connection closed'}
   if(out===o)out=null;
 }
 function ok(){return conn&&conn.open}

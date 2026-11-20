@@ -141,6 +141,7 @@ http.createServer((req, res) => {
     if (!meta.files[rel]) return json(res, 404, { error: 'no such file' });
     return sendFile(req, res, path.join(dir, 'data', rel), rel.split('/').pop());
   }
+  if (req.method === 'GET' && p === '/health') { res.writeHead(200); return res.end('ok'); }
   json(res, 404, { error: 'not found' });
 }).listen(PORT, () => console.log('Running on port ' + PORT + '. Files are kept in ' + DATA + ' for ' + KEEP_DAYS + ' days.')).requestTimeout = 0;
 
